@@ -1,0 +1,1767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Stewardship Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #12161c;
+    --panel: #1a2029;
+    --panel-raised: #212836;
+    --border: #2a3140;
+    --text: #e6e9ef;
+    --text-dim: #8b93a3;
+    --amber: #e8a54b;
+    --amber-dim: #4a3a24;
+    --red: #e05a5a;
+    --green: #5bc98a;
+    --blue: #5b8ce0;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Manrope', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 40px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  header .brand { display: flex; align-items: baseline; gap: 14px; }
+  header h1 {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  header .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--amber);
+    background: var(--amber-dim);
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.04em;
+  }
+  header .queue-count {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  header .queue-count b { color: var(--amber); font-size: 16px; }
+
+  main {
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    gap: 0;
+    min-height: calc(100vh - 78px);
+  }
+  .queue-panel {
+    border-right: 1px solid var(--border);
+    max-height: calc(100vh - 78px);
+    display: flex;
+    flex-direction: column;
+  }
+  .queue-items { overflow-y: auto; flex: 1; }
+  .pagination {
+    display: flex; gap: 8px; align-items: center; padding: 10px 14px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .pagination button {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 5px 10px;
+    border-radius: 6px; cursor: pointer; font-size: 11px;
+  }
+  .pagination button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .pagination span { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex: 1; }
+  .pagination select {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 5px 8px;
+    border-radius: 6px; font-size: 11px; font-family: var(--mono); cursor: pointer;
+  }
+  .queue-item {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .queue-item:hover { background: var(--panel); }
+  .queue-item.active { background: var(--panel-raised); border-left: 3px solid var(--amber); }
+  .queue-item .qid {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .queue-item .qname { font-size: 15px; font-weight: 600; margin: 4px 0; }
+  .queue-item .qreason {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--red);
+    background: rgba(224,90,90,0.1);
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-top: 4px;
+  }
+
+  .detail-panel { padding: 32px 40px; overflow-y: auto; max-height: calc(100vh - 78px); }
+  .empty-state {
+    color: var(--text-dim);
+    font-size: 15px;
+    padding-top: 60px;
+    text-align: center;
+  }
+  .record-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .record-header h2 { margin: 0; font-size: 22px; }
+  .source-badge {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+  .reasons-box {
+    background: rgba(224,90,90,0.08);
+    border: 1px solid rgba(224,90,90,0.3);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 24px;
+  }
+  .reasons-box .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--red);
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .reasons-box ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text); }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .field {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .field label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .field input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--mono);
+    outline: none;
+  }
+  .field.changed { border-color: var(--amber); background: var(--amber-dim); }
+  .field.changed input { color: var(--amber); }
+
+  .ai-panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 24px;
+  }
+  .ai-panel .ai-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .ai-panel .ai-header .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--amber);
+  }
+  .ai-panel .ai-header span { font-family: var(--mono); font-size: 12px; color: var(--amber); letter-spacing: 0.04em; }
+  .ai-panel .rationale { font-size: 14px; line-height: 1.5; color: var(--text); margin-bottom: 10px; }
+  .ai-panel .source-tag { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+
+  .actions { display: flex; gap: 12px; }
+  button {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 14px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.08s ease, opacity 0.12s ease;
+  }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-suggest { background: var(--panel-raised); color: var(--amber); border: 1px solid var(--amber); }
+  .btn-resolve { background: var(--green); color: #0a1710; }
+  .btn-reject { background: transparent; color: var(--red); border: 1px solid var(--red); }
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--panel-raised); border: 1px solid var(--border);
+    padding: 12px 18px; border-radius: 8px; font-size: 13px;
+    display: none; max-width: 420px;
+  }
+  .toast.toast-error {
+    border-color: var(--red); color: var(--red); background: rgba(224,90,90,0.1);
+  }
+
+  /* ---------- Login screen ---------- */
+  #loginScreen { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .login-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 40px 36px; width: 340px;
+  }
+  .login-box h1 { font-size: 18px; margin: 0 0 4px; }
+  .login-box .sub { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-bottom: 24px; }
+  .login-box label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; margin-top: 16px; }
+  .login-box input {
+    width: 100%; background: var(--panel-raised); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; color: var(--text); font-size: 14px; outline: none; font-family: var(--sans);
+  }
+  .login-box input:focus { border-color: var(--amber); }
+  .login-box button {
+    width: 100%; margin-top: 22px; background: var(--amber); color: #241a08; border: none;
+    padding: 11px; border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer;
+  }
+  .login-error { color: var(--red); font-size: 12px; margin-top: 12px; display: none; }
+
+  /* ---------- Access denied ---------- */
+  #accessDenied { min-height: 100vh; display: none; align-items: center; justify-content: center; }
+  .denied-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 36px 40px; width: 420px; text-align: center;
+  }
+  .denied-box h1 { font-size: 18px; margin: 0 0 12px; color: var(--red); }
+  .denied-box p { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin: 0 0 20px; }
+  .denied-box button {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    padding: 9px 18px; border-radius: 7px; font-size: 13px; cursor: pointer;
+  }
+
+  /* ---------- User chip (header) ---------- */
+  .user-chip { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .user-chip .role-badge {
+    font-family: var(--mono); font-size: 10px; color: var(--amber); background: var(--amber-dim);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .user-chip button {
+    background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  }
+  header .header-right { display: flex; align-items: center; gap: 20px; }
+
+  /* ---------- View tabs ---------- */
+  .view-tabs {
+    display: flex; gap: 4px; padding: 14px 40px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .view-tab {
+    background: transparent; border: none; color: var(--text-dim);
+    font-family: var(--sans); font-weight: 700; font-size: 13px;
+    padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+    border-radius: 0;
+  }
+  .view-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+  .filter-banner { margin-left: auto; display: flex; align-items: center; gap: 10px; padding-bottom: 10px; }
+  .filter-banner-text { color: var(--red); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+  .filter-clear-btn {
+    background: transparent; border: 1px solid var(--red); color: var(--red);
+    font-family: var(--mono); font-size: 10px; padding: 3px 9px; border-radius: 5px; cursor: pointer;
+  }
+  .filter-clear-btn:hover { background: rgba(224,90,90,0.1); }
+
+  /* ---------- Match review comparison ---------- */
+  .match-item .qscore {
+    font-family: var(--mono); font-size: 11px; color: var(--amber);
+    background: var(--amber-dim); display: inline-block; padding: 2px 6px;
+    border-radius: 3px; margin-top: 4px;
+  }
+  .compare-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    margin-bottom: 24px;
+  }
+  .compare-col { padding: 16px 18px; }
+  .compare-col:first-child { border-right: 1px solid var(--border); }
+  .compare-col .source-badge { margin-bottom: 14px; display: inline-block; }
+  .compare-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .compare-row:last-child { border-bottom: none; }
+  .compare-row label {
+    display: block; font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+    letter-spacing: 0.05em; margin-bottom: 3px;
+  }
+  .compare-row .val { font-size: 14px; }
+  .compare-row .val.diff { color: var(--amber); font-weight: 600; }
+  .similarity-banner {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; margin-bottom: 20px;
+  }
+  .similarity-banner .label { font-family: var(--mono); font-size: 11px; color: var(--text-dim); letter-spacing: 0.05em; }
+  .similarity-banner .score { font-family: var(--mono); font-size: 20px; color: var(--amber); font-weight: 700; }
+  .btn-confirm { background: var(--green); color: #0a1710; }
+  .status-pill {
+    font-family: var(--mono); font-size: 10px; padding: 2px 8px; border-radius: 4px;
+    display: inline-block; margin-left: 8px;
+  }
+  .status-pill.confirmed { color: var(--green); background: rgba(91,201,138,0.12); }
+  .status-pill.rejected { color: var(--red); background: rgba(224,90,90,0.12); }
+  .status-pill.in-review { color: var(--blue); background: rgba(91,140,224,0.12); }
+  .status-pill.cancelled { color: var(--text-dim); background: rgba(139,147,163,0.12); }
+
+  /* ---------- Dashboard ---------- */
+  #dashboardView {
+    display: none;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    min-height: calc(100vh - 78px);
+  }
+  .dash-pane { padding: 28px 32px; overflow-y: auto; max-height: calc(100vh - 78px); }
+  .dash-pane:first-child { border-right: 1px solid var(--border); }
+  .dash-pane-title { margin: 0 0 18px; font-size: 17px; }
+  .dash-section-label {
+    font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    letter-spacing: 0.05em; margin-bottom: 10px; text-transform: uppercase;
+  }
+  .kpi-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px; }
+  .kpi-card {
+    flex: 1; min-width: 88px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px;
+  }
+  .kpi-card .kpi-label {
+    font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+    letter-spacing: 0.05em; margin-bottom: 4px; text-transform: uppercase;
+  }
+  .kpi-card .kpi-value { font-size: 22px; font-weight: 800; }
+  .kpi-card.clickable { cursor: pointer; transition: border-color 0.12s ease, transform 0.08s ease; }
+  .kpi-card.clickable:hover { border-color: var(--amber); }
+  .kpi-card.clickable:active { transform: scale(0.98); }
+  .bar-row { margin-bottom: 9px; }
+  .bar-row.clickable { cursor: pointer; }
+  .bar-row.clickable:hover .bar-head .bl { color: var(--amber); }
+  .bar-row .bar-head {
+    display: flex; justify-content: space-between; font-size: 11px;
+    color: var(--text-dim); margin-bottom: 3px; gap: 10px;
+  }
+  .bar-row .bar-head .bl { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row .bar-head .bv { font-family: var(--mono); color: var(--text); flex-shrink: 0; }
+  .bar-track { background: var(--panel); border-radius: 4px; height: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .chart-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-dim); flex-wrap: wrap; }
+  .chart-legend.stacked { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .chart-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .chart-legend .legend-item.clickable { cursor: pointer; }
+  .chart-legend .legend-item.clickable:hover { color: var(--text); }
+  .pie-slice.clickable { cursor: pointer; }
+  .readonly-badge {
+    display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--red);
+    background: rgba(224,90,90,0.1); border: 1px solid rgba(224,90,90,0.3);
+    padding: 4px 10px; border-radius: 4px; margin-bottom: 16px; letter-spacing: 0.03em;
+  }
+  .field-readonly .field-readonly-value {
+    font-size: 14px; font-family: var(--mono); color: var(--text-dim); padding: 2px 0;
+  }
+  .field.field-diff { border-color: var(--green); background: rgba(91,201,138,0.08); }
+  .field.field-diff .field-readonly-value { color: var(--green); font-weight: 600; }
+  .field-old-value {
+    font-family: var(--mono); font-size: 10px; color: var(--green); opacity: 0.7; margin-top: 4px;
+  }
+  .new-entity-badge {
+    display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--green);
+    background: rgba(91,201,138,0.1); border: 1px solid rgba(91,201,138,0.3);
+    padding: 4px 10px; border-radius: 4px; margin-bottom: 16px; letter-spacing: 0.03em;
+  }
+
+  /* ---------- Approvals: framed, light-toned record form ----------
+     Wraps the record shown below SUBMITTED BY in the Approvals detail
+     panel -- a distinct bordered frame with light field panes so the
+     underlying record stands out from the rest of the (dark) console. */
+  .approval-record-frame {
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px 4px;
+    margin-bottom: 20px;
+    background: #1c222c;
+  }
+  .approval-record-frame .field,
+  .approval-record-frame .compare-col {
+    background: #eef3fb;
+    border-color: #cdd9ec;
+  }
+  .approval-record-frame .field label,
+  .approval-record-frame .compare-row label {
+    color: #5b6b85;
+  }
+  .approval-record-frame .field-readonly .field-readonly-value,
+  .approval-record-frame .compare-row .val {
+    color: #1a2233;
+  }
+  .approval-record-frame .field.field-diff {
+    background: #bfead3;
+    border-color: #6cc99b;
+  }
+  .approval-record-frame .field.field-diff .field-readonly-value {
+    color: #157347;
+  }
+  .approval-record-frame .field-old-value {
+    color: #b91c1c;
+    opacity: 1;
+  }
+  .approval-record-frame .compare-row { border-bottom-color: #d7e1f0; }
+  .approval-record-frame .compare-row .val.diff { color: #9a6b0c; }
+  .approval-record-frame .compare-col .source-badge {
+    color: #4a5568; border-color: #cdd9ec; background: #fff;
+  }
+  .approval-record-frame .compare-grid { border-color: #cdd9ec; }
+  .approval-record-frame .compare-col:first-child { border-right-color: #cdd9ec; }
+  .your-activity {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-top: 22px;
+  }
+  .your-activity .dash-section-label { margin-bottom: 12px; }
+  .your-activity .kpi-row { margin-bottom: 0; }
+  .your-activity .kpi-card { background: var(--panel-raised); min-width: 76px; }
+  .dash-empty { color: var(--text-dim); font-size: 12px; padding: 10px 0; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginScreen">
+  <div class="login-box">
+    <h1>Data Stewardship Console</h1>
+    <div class="sub">SIGN IN TO CONTINUE</div>
+    <label>Username</label>
+    <input type="text" id="loginUsername" autocomplete="username">
+    <label>Password</label>
+    <input type="password" id="loginPassword" autocomplete="current-password">
+    <button onclick="doLogin()">Sign in</button>
+    <div class="login-error" id="loginError">Invalid username or password.</div>
+  </div>
+</div>
+
+<!-- ACCESS DENIED -->
+<div id="accessDenied">
+  <div class="denied-box">
+    <h1>Access denied</h1>
+    <p id="deniedMessage">This console is restricted to Data Steward and Data Owner roles.</p>
+    <button onclick="doLogout()">Sign out</button>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="appShell" style="display:none;">
+<header>
+  <div class="brand">
+    <h1>Data Stewardship Console</h1>
+    <span class="tag">MDM DEMO</span>
+  </div>
+  <div class="header-right">
+    <div class="queue-count" id="queueCountWrap"><span id="queueCountLabel">Open exceptions</span>: <b id="queueCount">--</b></div>
+    <div class="user-chip">
+      <span id="userFullName"></span>
+      <span class="role-badge" id="userRoleBadge"></span>
+      <button onclick="doLogout()">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<div class="view-tabs">
+  <button class="view-tab" id="tabDashboard" onclick="switchView('dashboard')">Dashboard</button>
+  <button class="view-tab" id="tabExceptions" onclick="switchView('exceptions')">Exception Queue</button>
+  <button class="view-tab" id="tabMatchReview" onclick="switchView('matchReview')">Match Review</button>
+  <button class="view-tab" id="tabApprovals" onclick="switchView('approvals')">Approvals</button>
+  <span class="filter-banner" id="filterBanner" style="display:none;">
+    <span class="filter-banner-text" id="filterBannerText"></span>
+    <button class="filter-clear-btn" onclick="clearDashboardFilter()">Clear</button>
+  </span>
+</div>
+
+<div id="dashboardView">
+  <div class="dash-pane" id="dashPaneExceptions"><div class="empty-state">Loading exceptions dashboard…</div></div>
+  <div class="dash-pane" id="dashPaneMatchReview"><div class="empty-state">Loading match review dashboard…</div></div>
+</div>
+
+<main id="mainQueueView">
+  <div class="queue-panel">
+    <div class="queue-items" id="queuePanel">
+      <div class="empty-state">Loading queue…</div>
+    </div>
+    <div class="pagination" id="queuePagination"></div>
+  </div>
+  <div class="detail-panel" id="detailPanel">
+    <div class="empty-state">Select a record from the queue to begin remediation.</div>
+  </div>
+</main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '/api/v1';
+const SESSION_KEY = 'mdm_session';   // shared across /portal and /app (same origin) for single sign-on
+const ALLOWED_ROLES = ['dataSteward', 'dataOwner'];
+const ROLE_LABELS = { admin: 'Admin', dataSteward: 'Data Steward', dataOwner: 'Data Owner', businessUser: 'Business User' };
+function roleLabel(role) { return ROLE_LABELS[role] || role; }
+
+let session = null;           // {token, user}
+let currentItem = null;
+let editedFields = {};
+let currentView = 'dashboard';   // 'dashboard' | 'exceptions' | 'matchReview' | 'approvals'
+let currentMatchItem = null;
+let currentApprovalItem = null;
+let currentApprovalRecordData = null;   // "current state" fetched for the embedded Approvals record form
+let approvalsMode = 'pending';    // 'pending' (awaiting my decision) | 'mine' (my submissions)
+let approvalsCategoryFilter = '';    // '' (all categories) or a workflow_type key
+
+// Set only when the user arrives at Exception Queue / Match Review by clicking
+// a dashboard element. { view: 'exceptions'|'matchReview', params: {...query params...}, label: string|null }
+// label is null for the "Open" exceptions count / "Pending" match-review count,
+// since those are identical to the tab's own default view (per product decision).
+let dashboardFilter = null;
+
+function authHeaders() {
+  return { 'Authorization': `Bearer ${session.token}`, 'Content-Type': 'application/json' };
+}
+
+// ---------------------------------------------------------------------------
+// Shared pagination helper. Every list view registers a pager state keyed by
+// a stable string (pagerState), reads its current limit/offset (pagerParams),
+// fetches through pagedFetch (which auto-corrects the page if a filter/search
+// change shrank the result set out from under the current offset), and
+// renders the Prev/Next/page-size control via pagerHtml. Page size choice is
+// remembered per key in localStorage so it survives reloads and re-logins.
+// ---------------------------------------------------------------------------
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const pagers = {};
+
+function pagerState(key, reloadFn) {
+  if (!pagers[key]) {
+    const stored = parseInt(localStorage.getItem('mdm_pagesize_' + key), 10);
+    pagers[key] = { page: 0, pageSize: PAGE_SIZE_OPTIONS.includes(stored) ? stored : 10, reload: reloadFn };
+  } else {
+    pagers[key].reload = reloadFn;
+  }
+  return pagers[key];
+}
+
+function pagerResetPage(key) {
+  if (pagers[key]) pagers[key].page = 0;
+}
+
+function pagerParams(key) {
+  const p = pagers[key];
+  return { limit: p.pageSize, offset: p.page * p.pageSize };
+}
+
+// Returns true if the page was out of range for the given total and had to
+// be clamped -- callers should re-fetch once when this returns true.
+function pagerReconcile(key, total) {
+  const p = pagers[key];
+  const totalPages = Math.max(1, Math.ceil(total / p.pageSize));
+  if (p.page > totalPages - 1) {
+    p.page = totalPages - 1;
+    return true;
+  }
+  return false;
+}
+
+function pagerGo(key, delta) {
+  pagers[key].page += delta;
+  pagers[key].reload();
+}
+
+function pagerSetSize(key, size) {
+  size = parseInt(size, 10);
+  pagers[key].pageSize = size;
+  pagers[key].page = 0;
+  localStorage.setItem('mdm_pagesize_' + key, String(size));
+  pagers[key].reload();
+}
+
+function pagerHtml(key, total) {
+  const p = pagers[key];
+  const totalPages = Math.max(1, Math.ceil(total / p.pageSize));
+  const page = Math.min(p.page, totalPages - 1);
+  return `
+    <button ${page <= 0 ? 'disabled' : ''} onclick="pagerGo(${jsStr(key)}, -1)">← Prev</button>
+    <span>Page ${page + 1} of ${totalPages} · ${total} total</span>
+    <button ${(page + 1) >= totalPages ? 'disabled' : ''} onclick="pagerGo(${jsStr(key)}, 1)">Next →</button>
+    <select onchange="pagerSetSize(${jsStr(key)}, this.value)">
+      ${PAGE_SIZE_OPTIONS.map(n => `<option value="${n}" ${n === p.pageSize ? 'selected' : ''}>${n} / page</option>`).join('')}
+    </select>`;
+}
+
+// GET-fetches url (built by urlBuilder(params), params pre-filled with the
+// pager's limit/offset), and if the response's total/count means the current
+// page no longer exists (e.g. a filter just shrank the result set), silently
+// re-fetches page 1 of the corrected range once rather than showing a blank
+// page. Returns the parsed JSON, or null on a failed request.
+async function pagedFetch(key, urlBuilder) {
+  let params = new URLSearchParams(pagerParams(key));
+  let res = await fetch(urlBuilder(params), { headers: authHeaders() });
+  if (!res.ok) return null;
+  let data = await res.json();
+  const total = data.total ?? data.count;
+  if (total !== undefined && pagerReconcile(key, total)) {
+    params = new URLSearchParams(pagerParams(key));
+    res = await fetch(urlBuilder(params), { headers: authHeaders() });
+    if (!res.ok) return null;
+    data = await res.json();
+  }
+  return data;
+}
+
+function saveSession(s) {
+  session = s;
+  localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+}
+
+function clearSession() {
+  session = null;
+  localStorage.removeItem(SESSION_KEY);
+}
+
+function showScreen(id) {
+  ['loginScreen', 'accessDenied', 'appShell'].forEach(s => {
+    document.getElementById(s).style.display = s === id ? (s === 'appShell' ? 'block' : 'flex') : 'none';
+  });
+}
+
+function enterApp() {
+  if (!ALLOWED_ROLES.includes(session.user.role)) {
+    document.getElementById('deniedMessage').textContent =
+      `Signed in as ${session.user.full_name} (${roleLabel(session.user.role)}). ` +
+      `This console is restricted to Data Steward and Data Owner roles.`;
+    showScreen('accessDenied');
+    return;
+  }
+  document.getElementById('userFullName').textContent = session.user.full_name;
+  document.getElementById('userRoleBadge').textContent = roleLabel(session.user.role).toUpperCase();
+  showScreen('appShell');
+  switchView('dashboard');
+}
+
+async function tryRestoreSession() {
+  const raw = localStorage.getItem(SESSION_KEY);
+  if (!raw) { showScreen('loginScreen'); return; }
+  try {
+    const stored = JSON.parse(raw);
+    const res = await fetch(`${API}/auth/me`, { headers: { 'Authorization': `Bearer ${stored.token}` } });
+    if (res.ok) {
+      session = stored;
+      enterApp();
+    } else {
+      clearSession();
+      showScreen('loginScreen');
+    }
+  } catch (e) {
+    clearSession();
+    showScreen('loginScreen');
+  }
+}
+
+async function doLogin() {
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const res = await fetch(`${API}/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    document.getElementById('loginError').style.display = 'block';
+    return;
+  }
+  document.getElementById('loginError').style.display = 'none';
+  saveSession(await res.json());
+  enterApp();
+}
+
+async function doLogout() {
+  if (session) {
+    await fetch(`${API}/auth/logout`, { method: 'POST', headers: authHeaders() });
+  }
+  clearSession();
+  document.getElementById('loginPassword').value = '';
+  document.getElementById('loginError').style.display = 'none';
+  showScreen('loginScreen');
+}
+
+function switchView(view, keepDashboardFilter) {
+  currentView = view;
+  document.getElementById('tabDashboard').classList.toggle('active', view === 'dashboard');
+  document.getElementById('tabExceptions').classList.toggle('active', view === 'exceptions');
+  document.getElementById('tabMatchReview').classList.toggle('active', view === 'matchReview');
+  document.getElementById('tabApprovals').classList.toggle('active', view === 'approvals');
+
+  // Clicking a tab directly (not arriving via a dashboard drill-through)
+  // always resets to the tab's plain default view.
+  if (!keepDashboardFilter) dashboardFilter = null;
+
+  const dashEl = document.getElementById('dashboardView');
+  const mainEl = document.getElementById('mainQueueView');
+  const countWrap = document.getElementById('queueCountWrap');
+
+  if (view === 'dashboard') {
+    dashboardFilter = null;
+    dashEl.style.display = 'grid';
+    mainEl.style.display = 'none';
+    countWrap.style.display = 'none';
+    renderFilterBanner();
+    loadDashboard();
+    return;
+  }
+
+  dashEl.style.display = 'none';
+  mainEl.style.display = 'grid';
+  countWrap.style.display = 'flex';
+  currentItem = null;
+  currentMatchItem = null;
+  currentApprovalItem = null;
+  currentApprovalRecordData = null;
+  // Every arrival here -- a direct tab click (fresh unfiltered view) or a
+  // dashboard drill-through (a brand-new filtered slice) -- starts at page 1.
+  if (view === 'exceptions') pagerResetPage('stew_exceptions');
+  if (view === 'matchReview') pagerResetPage('stew_matchreview');
+  if (view === 'approvals') pagerResetPage('stew_approvals_' + approvalsMode);
+  document.getElementById('detailPanel').innerHTML = view === 'exceptions'
+    ? '<div class="empty-state">Select a record from the queue to begin remediation.</div>'
+    : view === 'matchReview'
+    ? '<div class="empty-state">Select a candidate pair to review.</div>'
+    : '<div class="empty-state">Select an item to approve or reject.</div>';
+  updateQueueCountLabel();
+  renderFilterBanner();
+  loadQueue();
+}
+
+function updateQueueCountLabel() {
+  const filtered = dashboardFilter && dashboardFilter.view === currentView;
+  document.getElementById('queueCountLabel').textContent = filtered
+    ? 'Filtered results'
+    : currentView === 'exceptions' ? 'Open exceptions'
+    : currentView === 'matchReview' ? 'Pending matches'
+    : approvalsMode === 'pending' ? 'Awaiting my decision'
+    : 'My submissions';
+}
+
+function renderFilterBanner() {
+  const banner = document.getElementById('filterBanner');
+  const active = dashboardFilter && dashboardFilter.view === currentView && dashboardFilter.label;
+  if (active) {
+    document.getElementById('filterBannerText').textContent = `Filtered list → ${dashboardFilter.label}`;
+    banner.style.display = 'flex';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+function clearDashboardFilter() {
+  dashboardFilter = null;
+  if (currentView === 'exceptions') pagerResetPage('stew_exceptions');
+  if (currentView === 'matchReview') pagerResetPage('stew_matchreview');
+  updateQueueCountLabel();
+  renderFilterBanner();
+  currentItem = null;
+  currentMatchItem = null;
+  document.getElementById('detailPanel').innerHTML = currentView === 'exceptions'
+    ? '<div class="empty-state">Select a record from the queue to begin remediation.</div>'
+    : '<div class="empty-state">Select a candidate pair to review.</div>';
+  loadQueue();
+}
+
+// jsStr safely embeds a string as a single-quoted JS literal inside an
+// onclick="..." HTML attribute (which itself uses double quotes).
+function jsStr(s) {
+  return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+}
+
+function goToFiltered(view, params, label) {
+  dashboardFilter = { view, params, label };
+  switchView(view, true);
+}
+
+function clickExceptionStatus(status) {
+  goToFiltered('exceptions', { status }, status === 'open' ? null : formatStatusLabel(status));
+}
+function clickExceptionReason(reason) {
+  goToFiltered('exceptions', { reason }, reason);
+}
+function clickExceptionActivity(kind) {
+  const names = { submitted: 'Submitted', approved: 'Approved', pending: 'Pending', sent_back: 'Sent back' };
+  goToFiltered('exceptions', { activity: kind }, `Your Activity: ${names[kind]}`);
+}
+
+function clickMatchStatus(status) {
+  goToFiltered('matchReview', { status }, status === 'pending' ? null : formatStatusLabel(status));
+}
+function clickMatchBucket(index, rangeText) {
+  goToFiltered('matchReview', { similarity_bucket: index }, rangeText);
+}
+function clickMatchActivity(kind) {
+  const names = { submitted: 'Submitted', approved: 'Approved', pending: 'Pending', sent_back: 'Sent back' };
+  goToFiltered('matchReview', { activity: kind }, `Your Activity: ${names[kind]}`);
+}
+
+// ---------------- Dashboard (Exceptions pane + Match Review pane) ----------------
+
+const STATUS_COLORS = {
+  open: '#e8a54b', pending: '#e8a54b',
+  in_review: '#5b8ce0',
+  resolved: '#5bc98a', confirmed: '#5bc98a',
+  rejected: '#e05a5a',
+  cancelled: '#8b93a3',
+};
+function statusColor(status) { return STATUS_COLORS[status] || '#8b93a3'; }
+function formatStatusLabel(status) {
+  return String(status).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+function statusPillClass(status) {
+  if (status === 'resolved' || status === 'confirmed') return 'confirmed';
+  if (status === 'rejected') return 'rejected';
+  if (status === 'in_review') return 'in-review';
+  if (status === 'cancelled') return 'cancelled';
+  return '';
+}
+
+function kpiRow(items) {
+  return `<div class="kpi-row">${items.map(it => `
+    <div class="kpi-card${it.onClick ? ' clickable' : ''}" ${it.onClick ? `onclick="${it.onClick}"` : ''}>
+      <div class="kpi-label">${it.label}</div>
+      <div class="kpi-value" style="color:${it.color || 'var(--text)'};">${it.value}</div>
+    </div>
+  `).join('')}</div>`;
+}
+
+function barList(data, color) {
+  if (!data.length) return '<div class="dash-empty">No data yet.</div>';
+  const max = Math.max(1, ...data.map(d => d.count));
+  return data.map(d => `
+    <div class="bar-row${d.onClick ? ' clickable' : ''}" ${d.onClick ? `onclick="${d.onClick}"` : ''}>
+      <div class="bar-head"><span class="bl">${escapeApprovalText(d.label)}</span><span class="bv">${d.count}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(d.count / max * 100).toFixed(1)}%;background:${color};"></div></div>
+    </div>
+  `).join('');
+}
+
+function svgPieChart(data, size) {
+  size = size || 130;
+  const total = data.reduce((s, d) => s + d.count, 0);
+  const r = size / 2 - 3, cx = size / 2, cy = size / 2;
+  if (total === 0) {
+    return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle cx="${cx}" cy="${cy}" r="${r}" fill="var(--panel)" stroke="var(--border)"/></svg>`;
+  }
+  const nonZero = data.filter(d => d.count > 0);
+  if (nonZero.length === 1) {
+    const d0 = nonZero[0];
+    return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><circle class="pie-slice${d0.onClick ? ' clickable' : ''}" cx="${cx}" cy="${cy}" r="${r}" fill="${d0.color}" ${d0.onClick ? `onclick="${d0.onClick}"` : ''}/></svg>`;
+  }
+  let angle = -Math.PI / 2, paths = '';
+  data.forEach(d => {
+    if (d.count <= 0) return;
+    const frac = d.count / total;
+    const a0 = angle, a1 = angle + frac * Math.PI * 2;
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    const large = (a1 - a0) > Math.PI ? 1 : 0;
+    paths += `<path class="pie-slice${d.onClick ? ' clickable' : ''}" d="M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z" fill="${d.color}" stroke="var(--bg)" stroke-width="1.5" ${d.onClick ? `onclick="${d.onClick}"` : ''}/>`;
+    angle = a1;
+  });
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${paths}</svg>`;
+}
+
+function svgTrendChart(series, keys, colors, width, height) {
+  width = width || 480; height = height || 190;
+  if (!series.length) return '<div class="dash-empty">No trend data yet.</div>';
+  const pad = { l: 30, r: 10, t: 10, b: 22 };
+  const w = width - pad.l - pad.r, h = height - pad.t - pad.b;
+  const maxY = Math.max(1, ...series.flatMap(d => keys.map(k => d[k] || 0)));
+  const n = series.length;
+  const xAt = i => n > 1 ? pad.l + (w / (n - 1)) * i : pad.l + w / 2;
+  const yAt = v => pad.t + h - (v / maxY) * h;
+
+  let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="xMinYMid meet">`;
+  for (let g = 0; g <= 3; g++) {
+    const y = pad.t + (h / 3) * g;
+    const val = Math.round(maxY - (maxY / 3) * g);
+    svg += `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" stroke="#2a3140" stroke-width="1"/>`;
+    svg += `<text x="${pad.l - 5}" y="${y + 3}" text-anchor="end" font-size="9" fill="#8b93a3">${val}</text>`;
+  }
+  keys.forEach((k, ki) => {
+    const pts = series.map((d, i) => `${xAt(i)},${yAt(d[k] || 0)}`).join(' ');
+    svg += `<polyline points="${pts}" fill="none" stroke="${colors[ki]}" stroke-width="2"/>`;
+    series.forEach((d, i) => { svg += `<circle cx="${xAt(i)}" cy="${yAt(d[k] || 0)}" r="2.2" fill="${colors[ki]}"/>`; });
+  });
+  const idxs = n === 1 ? [0] : Array.from(new Set([0, Math.floor((n - 1) / 2), n - 1]));
+  idxs.forEach(i => {
+    svg += `<text x="${xAt(i)}" y="${height - 6}" text-anchor="middle" font-size="9" fill="#8b93a3">${series[i].date.slice(5)}</text>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+function yourActivityBlock(mine, kind) {
+  const clickFn = kind === 'exceptions' ? 'clickExceptionActivity' : 'clickMatchActivity';
+  return `
+    <div class="your-activity">
+      <div class="dash-section-label">Your activity</div>
+      ${kpiRow([
+        { label: 'Submitted', value: mine.submitted, onClick: `${clickFn}('submitted')` },
+        { label: 'Approved', value: mine.approved, color: 'var(--green)', onClick: `${clickFn}('approved')` },
+        { label: 'Pending', value: mine.pending, color: 'var(--amber)', onClick: `${clickFn}('pending')` },
+        { label: 'Sent back', value: mine.sent_back, color: 'var(--red)', onClick: `${clickFn}('sent_back')` },
+      ])}
+    </div>`;
+}
+
+function renderExceptionsPane(exc) {
+  if (!exc) return '<div class="empty-state">Could not load exceptions summary.</div>';
+  const kpis = [{ label: 'Total', value: exc.total }].concat(
+    exc.by_status.map(s => ({
+      label: formatStatusLabel(s.status), value: s.count, color: statusColor(s.status),
+      onClick: `clickExceptionStatus(${jsStr(s.status)})`,
+    }))
+  );
+  return `
+    <h3 class="dash-pane-title">Exceptions</h3>
+    ${kpiRow(kpis)}
+    <div class="dash-section-label">By rejection reason</div>
+    ${barList(exc.by_reason.map(r => ({ label: r.reason, count: r.count, onClick: `clickExceptionReason(${jsStr(r.reason)})` })), 'var(--amber)')}
+    <div class="dash-section-label" style="margin-top:20px;">Trend — created vs. resolved vs. rejected</div>
+    ${svgTrendChart(exc.trend, ['created', 'resolved', 'rejected'], ['#e8a54b', '#5bc98a', '#e05a5a'])}
+    <div class="chart-legend">
+      <span><i style="background:#e8a54b"></i>Created</span>
+      <span><i style="background:#5bc98a"></i>Resolved</span>
+      <span><i style="background:#e05a5a"></i>Rejected</span>
+    </div>
+    ${yourActivityBlock(exc.your_activity, 'exceptions')}
+  `;
+}
+
+function renderMatchReviewPane(mr) {
+  if (!mr) return '<div class="empty-state">Could not load match review summary.</div>';
+  const kpis = [{ label: 'Total', value: mr.total }].concat(
+    mr.by_status.map(s => ({
+      label: formatStatusLabel(s.status), value: s.count, color: statusColor(s.status),
+      onClick: `clickMatchStatus(${jsStr(s.status)})`,
+    }))
+  );
+  const pieData = mr.by_status.map(s => ({
+    count: s.count, color: statusColor(s.status), label: formatStatusLabel(s.status),
+    onClick: `clickMatchStatus(${jsStr(s.status)})`,
+  }));
+  const legend = pieData.map(d => `<span class="legend-item clickable" onclick="${d.onClick}"><i style="background:${d.color}"></i>${d.label} (${d.count})</span>`).join('');
+  return `
+    <h3 class="dash-pane-title">Match Review</h3>
+    ${kpiRow(kpis)}
+    <div class="dash-section-label">Status breakdown</div>
+    <div style="display:flex;align-items:center;gap:22px;margin-bottom:6px;flex-wrap:wrap;">
+      ${svgPieChart(pieData)}
+      <div class="chart-legend stacked">${legend}</div>
+    </div>
+    <div class="dash-section-label" style="margin-top:20px;">
+      Similarity score distribution (review band ${mr.thresholds.review_lower.toFixed(2)}–${mr.thresholds.auto_merge.toFixed(2)})
+    </div>
+    ${barList(mr.similarity_buckets.map(b => ({ label: b.range, count: b.count, onClick: `clickMatchBucket(${b.bucket_index}, ${jsStr(b.range)})` })), 'var(--blue)')}
+    ${yourActivityBlock(mr.your_activity, 'matchReview')}
+  `;
+}
+
+async function loadDashboard() {
+  document.getElementById('dashPaneExceptions').innerHTML = '<div class="empty-state">Loading exceptions dashboard…</div>';
+  document.getElementById('dashPaneMatchReview').innerHTML = '<div class="empty-state">Loading match review dashboard…</div>';
+  const [excRes, mrRes] = await Promise.all([
+    fetch(`${API}/stewardship/dashboard/exceptions-summary`, { headers: authHeaders() }),
+    fetch(`${API}/stewardship/dashboard/match-review-summary`, { headers: authHeaders() }),
+  ]);
+  const exc = excRes.ok ? await excRes.json() : null;
+  const mr = mrRes.ok ? await mrRes.json() : null;
+  document.getElementById('dashPaneExceptions').innerHTML = renderExceptionsPane(exc);
+  document.getElementById('dashPaneMatchReview').innerHTML = renderMatchReviewPane(mr);
+}
+
+async function loadQueue() {
+  if (currentView === 'exceptions') return loadExceptionQueue();
+  if (currentView === 'matchReview') return loadMatchReviewQueue();
+  return loadApprovalsQueue();
+}
+
+function buildQueueParams(defaultStatus, params) {
+  if (dashboardFilter && dashboardFilter.view === currentView) {
+    Object.entries(dashboardFilter.params).forEach(([k, v]) => params.set(k, v));
+  } else {
+    params.set('status', defaultStatus);
+  }
+  return params;
+}
+
+async function loadExceptionQueue() {
+  pagerState('stew_exceptions', loadExceptionQueue);
+  const data = await pagedFetch('stew_exceptions', params =>
+    `${API}/stewardship/queue?${buildQueueParams('open', params).toString()}`);
+  if (!data) return;
+  document.getElementById('queueCount').textContent = data.count;
+  const panel = document.getElementById('queuePanel');
+  document.getElementById('queuePagination').innerHTML = pagerHtml('stew_exceptions', data.total);
+  if (data.items.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No records match this view.</div>';
+    return;
+  }
+  panel.innerHTML = data.items.map(item => `
+    <div class="queue-item" data-id="${item.exception_id}" onclick="selectItem('${item.exception_id}')">
+      <div class="qid">${item.source_system} · ${item.source_record_id}</div>
+      <div class="qname">${item.first_name || '(no first name)'} ${item.last_name || '(no last name)'}</div>
+      ${item.reject_reasons.map(r => `<span class="qreason">${r}</span>`).join(' ')}
+      ${item.effective_status !== 'open' ? `<span class="status-pill ${statusPillClass(item.effective_status)}">${formatStatusLabel(item.effective_status)}</span>` : ''}
+    </div>
+  `).join('');
+}
+
+async function loadMatchReviewQueue() {
+  pagerState('stew_matchreview', loadMatchReviewQueue);
+  const data = await pagedFetch('stew_matchreview', params =>
+    `${API}/stewardship/match-review?${buildQueueParams('pending', params).toString()}`);
+  if (!data) return;
+  document.getElementById('queueCount').textContent = data.count;
+  const panel = document.getElementById('queuePanel');
+  document.getElementById('queuePagination').innerHTML = pagerHtml('stew_matchreview', data.total);
+  if (data.items.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No records match this view.</div>';
+    return;
+  }
+  panel.innerHTML = data.items.map(item => `
+    <div class="queue-item match-item" data-id="${item.pair_id}" onclick="selectMatchItem('${item.pair_id}')">
+      <div class="qid">${item.source_system_a} · ${item.source_record_id_a}  ⇄  ${item.source_system_b} · ${item.source_record_id_b}</div>
+      <div class="qname">${item.first_name_a || '—'} ${item.last_name_a || '—'}  vs.  ${item.first_name_b || '—'} ${item.last_name_b || '—'}</div>
+      <span class="qscore">similarity ${item.similarity_score.toFixed(2)}</span>
+      ${item.effective_status !== 'pending' ? `<span class="status-pill ${statusPillClass(item.effective_status)}">${formatStatusLabel(item.effective_status)}</span>` : ''}
+    </div>
+  `).join('');
+}
+
+async function selectItem(exceptionId) {
+  document.querySelectorAll('.queue-item').forEach(el => el.classList.toggle('active', el.dataset.id === exceptionId));
+  const res = await fetch(`${API}/stewardship/queue/${exceptionId}`, { headers: authHeaders() });
+  currentItem = await res.json();
+  editedFields = {};
+  renderDetail();
+}
+
+const FIELD_LABELS = [
+  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
+  ['phone', 'Phone'], ['address_line1', 'Address'], ['city', 'City'],
+  ['state_code', 'State'], ['postal_code', 'Postal code'], ['country_code', 'Country'],
+];
+
+function renderDetail() {
+  const panel = document.getElementById('detailPanel');
+  const item = currentItem;
+  const editable = item.effective_status === 'open';
+  panel.innerHTML = `
+    <div class="record-header">
+      <h2>${item.first_name || '—'} ${item.last_name || '—'}</h2>
+      <span class="source-badge">${item.source_system} · ${item.source_record_id}</span>
+    </div>
+    ${!editable ? `<div class="readonly-badge">Read-only · status: ${formatStatusLabel(item.effective_status)}</div>` : ''}
+    ${editable ? `
+    <div class="reasons-box">
+      <div class="label">FAILED VALIDATION</div>
+      <ul>${item.reject_reasons.map(r => `<li>${r}</li>`).join('')}</ul>
+    </div>
+    <div class="field-grid" id="fieldGrid">
+      ${FIELD_LABELS.map(([key, label]) => `
+        <div class="field" id="field-${key}">
+          <label>${label}</label>
+          <input type="text" value="${item[key] ?? ''}" oninput="onFieldEdit('${key}', this.value)">
+        </div>
+      `).join('')}
+    </div>
+    ` : exceptionRecordFormHtml(item)}
+    ${editable ? `
+    <div id="aiPanelContainer"></div>
+    <div class="actions">
+      <button class="btn-suggest" onclick="getSuggestion()">✨ Get AI suggestion</button>
+      <button class="btn-resolve" onclick="resolveItem()">Approve & resolve</button>
+      <button class="btn-reject" onclick="rejectItem()">Reject record</button>
+    </div>` : ''}
+  `;
+}
+
+// Read-only exception record view: FAILED VALIDATION reasons + field grid.
+// Used both for closed/in-review items in the Exception Queue tab (no
+// proposedFields -- just shows current values) and embedded in the
+// Approvals detail panel (proposedFields = the submitted applied_fields,
+// so changed fields render highlighted with the prior value shown below).
+function exceptionRecordFormHtml(item, proposedFields) {
+  return `
+    <div class="reasons-box">
+      <div class="label">FAILED VALIDATION</div>
+      <ul>${(item.reject_reasons || []).map(r => `<li>${escapeApprovalText(r)}</li>`).join('')}</ul>
+    </div>
+    ${entityFieldsFormHtml(FIELD_LABELS, item, proposedFields || {})}
+  `;
+}
+
+// Generic read-only field grid: shows current[key], or proposed[key]
+// highlighted green (with the prior value shown below) when the proposal
+// actually changes it. Shared by every workflow type's embedded Approvals
+// form as well as the Exception Queue / Match Review read-only views.
+function formatFieldDisplayValue(val) {
+  if (val === undefined || val === null || val === '') return '—';
+  if (typeof val === 'boolean') return val ? 'Active' : 'Inactive';
+  return String(val);
+}
+
+function entityFieldsFormHtml(fieldDefs, current, proposed) {
+  current = current || {};
+  proposed = proposed || {};
+  return `<div class="field-grid">${fieldDefs.map(([key, label]) => {
+    const hasCurrent = Object.prototype.hasOwnProperty.call(current, key);
+    const hasProposed = Object.prototype.hasOwnProperty.call(proposed, key) && proposed[key] !== undefined;
+    const curVal = hasCurrent ? current[key] : undefined;
+    const newVal = hasProposed ? proposed[key] : undefined;
+    const changed = hasProposed && String(newVal ?? '') !== String(curVal ?? '');
+    const displayVal = changed ? newVal : curVal;
+    return `
+      <div class="field field-readonly${changed ? ' field-diff' : ''}">
+        <label>${label}</label>
+        <div class="field-readonly-value">${escapeApprovalText(formatFieldDisplayValue(displayVal))}</div>
+        ${changed ? `<div class="field-old-value">was: ${escapeApprovalText(formatFieldDisplayValue(curVal))}</div>` : ''}
+      </div>`;
+  }).join('')}</div>`;
+}
+
+function onFieldEdit(key, value) {
+  editedFields[key] = value;
+  document.getElementById(`field-${key}`).classList.add('changed');
+}
+
+async function getSuggestion() {
+  const btn = document.querySelector('.btn-suggest');
+  btn.disabled = true;
+  btn.textContent = 'Thinking…';
+  const res = await fetch(`${API}/stewardship/queue/${currentItem.exception_id}/suggest`, { method: 'POST', headers: authHeaders() });
+  const suggestion = await res.json();
+  btn.disabled = false;
+  btn.textContent = '✨ Get AI suggestion';
+
+  document.getElementById('aiPanelContainer').innerHTML = `
+    <div class="ai-panel">
+      <div class="ai-header"><span class="dot"></span><span>SUGGESTED REMEDIATION</span></div>
+      <div class="rationale">${suggestion.rationale}</div>
+      <div class="source-tag">source: ${suggestion.source}</div>
+    </div>
+  `;
+
+  for (const [key, value] of Object.entries(suggestion.suggested_fields)) {
+    const input = document.querySelector(`#field-${key} input`);
+    if (input) {
+      input.value = value;
+      onFieldEdit(key, value);
+    }
+  }
+}
+
+async function resolveItem() {
+  const btn = document.querySelector('.btn-resolve');
+  btn.disabled = true;
+  const res = await fetch(`${API}/stewardship/queue/${currentItem.exception_id}/resolve`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ applied_fields: editedFields, steward_note: 'Resolved via stewardship console' }),
+  });
+  btn.disabled = false;
+  if (res.ok) {
+    const data = await res.json();
+    const steps = (data.steps || []).map(s => s.step_name).join(' → ');
+    showToast(`Submitted for approval${steps ? ' (' + steps + ')' : ''}. It will reprocess once approved.`);
+    currentItem = null;
+    document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select a record from the queue to begin remediation.</div>';
+    loadQueue();
+    return;
+  }
+
+  // Validation gate rejected the resolve (still fails one or more rules):
+  // the record stays right where it is, in the queue and still selected --
+  // don't clear the detail panel or reload, just alert the steward.
+  let msg = 'Could not resolve this record.';
+  try {
+    const err = await res.json();
+    const detail = err.detail;
+    if (detail && typeof detail === 'object') {
+      msg = detail.message;
+      if (detail.still_failing && detail.still_failing.length) {
+        msg += ' Still failing: ' + detail.still_failing.join('; ') + '.';
+      }
+    } else if (typeof detail === 'string') {
+      msg = detail;
+    }
+  } catch (e) { /* fall through to generic message */ }
+  showToast(msg, 'error');
+}
+
+async function rejectItem() {
+  const res = await fetch(`${API}/stewardship/queue/${currentItem.exception_id}/reject`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ steward_note: 'Rejected via stewardship console' }),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    const steps = (data.steps || []).map(s => s.step_name).join(' → ');
+    showToast(`Rejection submitted for approval${steps ? ' (' + steps + ')' : ''}.`);
+    currentItem = null;
+    document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select a record from the queue to begin remediation.</div>';
+    loadQueue();
+  }
+}
+
+const COMPARE_FIELD_LABELS = [
+  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
+  ['phone', 'Phone'], ['address_line1', 'Address'], ['city', 'City'],
+  ['state_code', 'State'], ['postal_code', 'Postal code'],
+];
+
+async function selectMatchItem(pairId) {
+  document.querySelectorAll('.queue-item').forEach(el => el.classList.toggle('active', el.dataset.id === pairId));
+  const res = await fetch(`${API}/stewardship/match-review/${pairId}`, { headers: authHeaders() });
+  currentMatchItem = await res.json();
+  renderMatchDetail();
+}
+
+// Similarity banner + side-by-side compare grid. Shared by the Match Review
+// tab's own detail view and the embedded form shown in the Approvals panel
+// for 'match_review_confirmation' items -- there is no field-level proposal
+// to diff here (confirm/reject doesn't edit any fields), so this is always
+// just the current pair data.
+function matchRecordFormHtml(item) {
+  const rows = COMPARE_FIELD_LABELS.map(([key, label]) => {
+    const valA = item[`${key}_a`] ?? '';
+    const valB = item[`${key}_b`] ?? '';
+    const diff = String(valA).toLowerCase() !== String(valB).toLowerCase();
+    return { key, label, valA, valB, diff };
+  });
+  return `
+    <div class="similarity-banner">
+      <span class="label">EMBEDDING SIMILARITY (name + address, blocked on ${item.blocking_key})</span>
+      <span class="score">${item.similarity_score.toFixed(3)}</span>
+    </div>
+    <div class="compare-grid">
+      <div class="compare-col">
+        <span class="source-badge">${item.source_system_a} · ${item.source_record_id_a}</span>
+        ${rows.map(r => `
+          <div class="compare-row">
+            <label>${r.label}</label>
+            <div class="val ${r.diff ? 'diff' : ''}">${r.valA || '—'}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="compare-col">
+        <span class="source-badge">${item.source_system_b} · ${item.source_record_id_b}</span>
+        ${rows.map(r => `
+          <div class="compare-row">
+            <label>${r.label}</label>
+            <div class="val ${r.diff ? 'diff' : ''}">${r.valB || '—'}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+function renderMatchDetail() {
+  const item = currentMatchItem;
+  const panel = document.getElementById('detailPanel');
+  const editable = item.effective_status === 'pending';
+
+  panel.innerHTML = `
+    <div class="record-header">
+      <h2>Possible duplicate</h2>
+      <span class="source-badge">pair ${item.pair_id.slice(0, 8)}…</span>
+    </div>
+    ${!editable ? `<div class="readonly-badge">Read-only · status: ${formatStatusLabel(item.effective_status)}</div>` : ''}
+    ${item.status_note ? `<div class="readonly-badge" style="margin-top:-14px;">${escapeApprovalText(item.status_note)}</div>` : ''}
+    ${matchRecordFormHtml(item)}
+    ${editable ? `
+    <div class="actions">
+      <button class="btn-confirm" onclick="confirmMatch()">Confirm — same customer, merge</button>
+      <button class="btn-reject" onclick="rejectMatch()">Reject — not a duplicate</button>
+    </div>` : ''}
+  `;
+}
+
+async function confirmMatch() {
+  const res = await fetch(`${API}/stewardship/match-review/${currentMatchItem.pair_id}/confirm`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ steward_note: 'Confirmed via stewardship console' }),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    showToast(data.note || 'Submitted for approval.');
+    currentMatchItem = null;
+    document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select a candidate pair to review.</div>';
+    loadMatchReviewQueue();
+  }
+}
+
+async function rejectMatch() {
+  const res = await fetch(`${API}/stewardship/match-review/${currentMatchItem.pair_id}/reject`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ steward_note: 'Rejected via stewardship console' }),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    showToast(data.note || 'Submitted for approval.');
+    currentMatchItem = null;
+    document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select a candidate pair to review.</div>';
+    loadMatchReviewQueue();
+  }
+}
+
+// ---------------- Approvals (generic maker-checker) ----------------
+
+const WORKFLOW_TYPE_LABELS = {
+  stewardship_remediation: 'Exception Remediation',
+  gold_record_edit: 'Gold Record Edit',
+  match_review_confirmation: 'Match Review Confirmation',
+  user_admin_change: 'User Administration',
+  reference_data_change: 'Reference Data Maintenance',
+  rules_config_change: 'Rules Configuration',
+};
+// The stewardship app only originates 'stewardship_remediation' and
+// 'match_review_confirmation' instances (unlike the admin portal, which
+// originates the other four workflow types). /workflows/pending and
+// /workflows/mine are shared endpoints that return instances of *any*
+// workflow type, so this list is used both to build the category filter's
+// options AND to scope the queue itself -- otherwise "All categories" would
+// leak in portal-originated approval items. See loadApprovalsQueue below.
+const STEWARDSHIP_WORKFLOW_TYPES = ['stewardship_remediation', 'match_review_confirmation'];
+// Category filter options for the Approvals queue, alphabetical by label to
+// match the default category-then-ID sort order.
+const APPROVAL_CATEGORIES = Object.entries(WORKFLOW_TYPE_LABELS)
+  .filter(([type]) => STEWARDSHIP_WORKFLOW_TYPES.includes(type))
+  .sort((a, b) => a[1].localeCompare(b[1]));
+
+function summarizeInstance(inst) {
+  const p = inst.payload || {};
+  if (inst.workflow_type === 'stewardship_remediation') {
+    if (inst.action_type === 'resolve') {
+      const fieldStr = Object.entries(p.applied_fields || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+      return `Resolve exception ${inst.entity_id.slice(0, 8)}… — ${fieldStr || 'no field changes'}`;
+    }
+    return `Reject exception ${inst.entity_id.slice(0, 8)}…${p.steward_note ? ' — ' + p.steward_note : ''}`;
+  }
+  if (inst.workflow_type === 'gold_record_edit') {
+    const fieldStr = Object.entries(p.updates || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+    return `Edit golden record ${inst.entity_id} — ${fieldStr}`;
+  }
+  if (inst.workflow_type === 'match_review_confirmation') {
+    return `${inst.action_type === 'confirm' ? 'Confirm' : 'Reject'} match pair ${inst.entity_id.slice(0, 8)}…${p.steward_note ? ' — ' + p.steward_note : ''}`;
+  }
+  if (inst.workflow_type === 'user_admin_change') {
+    if (inst.action_type === 'create') return `Create user '${p.username}' (${p.role}, gold_access=${p.gold_access})`;
+    const fieldStr = Object.entries(p.updates || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+    return `Update user ${inst.entity_id} — ${fieldStr}`;
+  }
+  if (inst.workflow_type === 'reference_data_change') {
+    const label = inst.entity_type === 'ref_country_code' ? 'country code' : 'state code';
+    const verb = inst.action_type === 'create' ? 'Create' : 'Update';
+    return `${verb} ${label} ${p.code}${p.name ? ' — ' + p.name : ''}${p.is_active === false ? ' (deactivate)' : ''}`;
+  }
+  if (inst.workflow_type === 'rules_config_change') {
+    const fieldStr = Object.entries(p.fields || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+    const verb = inst.action_type === 'create' ? 'Create' : 'Update';
+    const target = p.entity_id || '(new)';
+    return `${verb} ${inst.entity_type.replace(/_/g, ' ')} ${target} — ${fieldStr}`;
+  }
+  return JSON.stringify(p);
+}
+
+// ---- Field label lists + fetchers for the embedded "record" form shown in
+// the Approvals detail panel, one per workflow_type. ----------------------
+
+const GOLD_FIELD_LABELS = [
+  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
+  ['phone', 'Phone'], ['address_line1', 'Address line 1'], ['address_line2', 'Address line 2'],
+  ['city', 'City'], ['state_code', 'State'], ['postal_code', 'Postal code'], ['country_code', 'Country'],
+];
+const USER_FIELD_LABELS = [
+  ['username', 'Username'], ['full_name', 'Full name'], ['role', 'Role'],
+  ['gold_access', 'Gold access'], ['is_active', 'Status'],
+];
+// Phase 1 (flexibility): REFDATA_FIELD_LABELS / RULES_FIELD_LABELS /
+// RULES_PK_BY_ENTITY_TYPE used to be hardcoded here, duplicating the same
+// dicts in portal_app's copy of this Approvals panel (the only place that
+// actually needs them to stay in sync). Both are now derived from
+// governance.entity_type_registry via GET /api/v1/governed-entities --
+// entityFieldsFormHtml (below) expects [key, label] pairs, so
+// catalogFieldPairs() adapts a catalog entry's field_schema to that shape.
+let GOVERNED_ENTITY_CATALOG = null;
+
+async function loadGovernedEntityCatalog(force) {
+  if (GOVERNED_ENTITY_CATALOG && !force) return GOVERNED_ENTITY_CATALOG;
+  const res = await fetch(`${API}/governed-entities`, { headers: authHeaders() });
+  const data = await res.json();
+  GOVERNED_ENTITY_CATALOG = data.items || [];
+  return GOVERNED_ENTITY_CATALOG;
+}
+
+function catalogEntry(entityType) {
+  return (GOVERNED_ENTITY_CATALOG || []).find(e => e.entity_type === entityType);
+}
+
+function pkFieldOf(entry) {
+  return (entry.field_schema || []).find(f => f.role === 'pk');
+}
+
+function nameFieldOf(entry) {
+  return (entry.field_schema || []).find(f => f.role === 'name');
+}
+
+function catalogFieldPairs(entityType) {
+  const entry = catalogEntry(entityType);
+  return entry ? entry.field_schema.map(f => [f.key, f.label]) : [];
+}
+
+// Fetches whatever "current state" data the embedded Approvals form needs
+// for this instance's workflow_type. Returns null when there's nothing to
+// fetch (e.g. a brand-new entity that doesn't exist yet) or the fetch isn't
+// permitted for the viewing user (e.g. a non-admin can't list users) --
+// callers treat null as "no current data to diff against."
+async function fetchApprovalRecordData(inst) {
+  const p = inst.payload || {};
+  // renderApprovalRecordSection (below) reads the catalog synchronously for
+  // reference_data_change/rules_config_change instances -- including
+  // 'create' ones, which return early below -- so load it unconditionally
+  // up front rather than only on the non-create branches.
+  if (inst.workflow_type === 'reference_data_change' || inst.workflow_type === 'rules_config_change') {
+    await loadGovernedEntityCatalog();
+  }
+  try {
+    if (inst.workflow_type === 'stewardship_remediation') {
+      const r = await fetch(`${API}/stewardship/queue/${inst.entity_id}`, { headers: authHeaders() });
+      return r.ok ? await r.json() : null;
+    }
+    if (inst.workflow_type === 'match_review_confirmation') {
+      const r = await fetch(`${API}/stewardship/match-review/${inst.entity_id}`, { headers: authHeaders() });
+      return r.ok ? await r.json() : null;
+    }
+    if (inst.workflow_type === 'gold_record_edit') {
+      return p.old_snapshot || null;   // already embedded in the workflow payload
+    }
+    if (inst.workflow_type === 'user_admin_change') {
+      if (inst.action_type === 'create') return null;   // brand-new user, nothing to diff against
+      const r = await fetch(`${API}/admin/users?limit=1000`, { headers: authHeaders() });
+      if (!r.ok) return null;
+      const data = await r.json();
+      return (data.users || []).find(u => u.user_id === inst.entity_id) || null;
+    }
+    if (inst.workflow_type === 'reference_data_change') {
+      if (inst.action_type === 'create') return null;
+      const r = await fetch(`${API}/reference-data/${p.entity_type}?limit=1000`, { headers: authHeaders() });
+      if (!r.ok) return null;
+      const data = await r.json();
+      const entry = catalogEntry(p.entity_type);
+      const pk = entry ? pkFieldOf(entry).key : null;
+      return pk ? (data.items || []).find(row => row[pk] === p.code) || null : null;
+    }
+    if (inst.workflow_type === 'rules_config_change') {
+      if (inst.action_type === 'create') return null;
+      const r = await fetch(`${API}/rules-config/${p.entity_type}?limit=1000`, { headers: authHeaders() });
+      if (!r.ok) return null;
+      const data = await r.json();
+      const entry = catalogEntry(p.entity_type);
+      const pk = entry ? entry.pk_column : null;
+      return pk ? (data.items || []).find(row => row[pk] === p.entity_id) || null : null;
+    }
+  } catch (e) { /* fall through to null below */ }
+  return null;
+}
+
+// Builds the embedded "record" form shown below SUBMITTED BY in the
+// Approvals detail panel -- per (b)/(c) of the spec, exceptions and match
+// reviews reuse the exact same rendering as their own tabs; the other
+// workflow types follow the same field-grid pattern for consistency.
+function renderApprovalRecordSection(inst, rec) {
+  const p = inst.payload || {};
+  if (inst.workflow_type === 'stewardship_remediation') {
+    if (!rec) return '<div class="dash-empty">Could not load the underlying exception record.</div>';
+    const proposed = inst.action_type === 'resolve' ? (p.applied_fields || {}) : {};
+    return `
+      <div class="record-header" style="margin-top:4px;">
+        <h2 style="font-size:17px;">${rec.first_name || '—'} ${rec.last_name || '—'}</h2>
+        <span class="source-badge">${rec.source_system} · ${rec.source_record_id}</span>
+      </div>
+      ${exceptionRecordFormHtml(rec, proposed)}
+    `;
+  }
+  if (inst.workflow_type === 'match_review_confirmation') {
+    if (!rec) return '<div class="dash-empty">Could not load the underlying match pair.</div>';
+    return `
+      <div class="record-header" style="margin-top:4px;">
+        <h2 style="font-size:17px;">Possible duplicate</h2>
+        <span class="source-badge">pair ${inst.entity_id.slice(0, 8)}…</span>
+      </div>
+      ${matchRecordFormHtml(rec)}
+    `;
+  }
+  if (inst.workflow_type === 'gold_record_edit') {
+    return `
+      <div class="record-header" style="margin-top:4px;">
+        <h2 style="font-size:17px;">Golden Record</h2>
+        <span class="source-badge">${inst.entity_id}</span>
+      </div>
+      ${entityFieldsFormHtml(GOLD_FIELD_LABELS, rec || {}, p.updates || {})}
+    `;
+  }
+  if (inst.workflow_type === 'user_admin_change') {
+    const isCreate = inst.action_type === 'create';
+    return `
+      <div class="record-header" style="margin-top:4px;">
+        <h2 style="font-size:17px;">${isCreate ? 'New User' : 'User'}</h2>
+        <span class="source-badge">${isCreate ? p.username : inst.entity_id}</span>
+      </div>
+      ${isCreate ? '<div class="new-entity-badge">New user — nothing to compare against</div>' : ''}
+      ${entityFieldsFormHtml(USER_FIELD_LABELS, isCreate ? {} : (rec || {}), isCreate ? p : (p.updates || {}))}
+    `;
+  }
+  if (inst.workflow_type === 'reference_data_change') {
+    const isCreate = inst.action_type === 'create';
+    const entry = catalogEntry(p.entity_type);
+    const fieldDefs = catalogFieldPairs(p.entity_type);
+    const pkKey = entry ? pkFieldOf(entry).key : 'code';
+    const nameKey = entry ? nameFieldOf(entry).key : 'name';
+    const proposed = { [pkKey]: p.code };
+    if (p.name !== undefined && p.name !== null) proposed[nameKey] = p.name;
+    if (p.is_active !== undefined && p.is_active !== null) proposed.is_active = p.is_active;
+    return `
+      <div class="record-header" style="margin-top:4px;">
+        <h2 style="font-size:17px;">${entry ? escapeApprovalText(entry.display_label_singular) : escapeApprovalText(p.entity_type)}</h2>
+        <span class="source-badge">${p.code}</span>
+      </div>
+      ${isCreate ? '<div class="new-entity-badge">New code — nothing to compare against</div>' : ''}
+      ${entityFieldsFormHtml(fieldDefs, isCreate ? {} : (rec || {}), proposed)}
+    `;
+  }
+  if (inst.workflow_type === 'rules_config_change') {
+    const isCreate = inst.action_type === 'create';
+    const entry = catalogEntry(p.entity_type);
+    const fieldDefs = catalogFieldPairs(p.entity_type);
+    return `
+      <div class="record-header" style="margin-top:4px;">
+        <h2 style="font-size:17px;">${entry ? escapeApprovalText(entry.display_label_singular) : formatStatusLabel(p.entity_type)}</h2>
+        <span class="source-badge">${p.entity_id || '(new)'}</span>
+      </div>
+      ${isCreate ? '<div class="new-entity-badge">New row — nothing to compare against</div>' : ''}
+      ${entityFieldsFormHtml(fieldDefs, isCreate ? {} : (rec || {}), p.fields || {})}
+    `;
+  }
+  return '';
+}
+
+function currentStepLabel(inst) {
+  const step = (inst.steps || []).find(s => s.step_order === inst.current_step);
+  return step ? `${step.step_name} (step ${step.step_order} of ${inst.steps.length})` : '';
+}
+
+// Sorts approval items by category (workflow type label) first, then by
+// instance ID -- so items of the same kind (e.g. all Exception Remediation)
+// are grouped together in the list, in a stable, predictable order.
+function sortApprovalItems(items) {
+  return [...items].sort((a, b) => {
+    const catA = WORKFLOW_TYPE_LABELS[a.workflow_type] || a.workflow_type;
+    const catB = WORKFLOW_TYPE_LABELS[b.workflow_type] || b.workflow_type;
+    if (catA !== catB) return catA.localeCompare(catB);
+    return String(a.instance_id).localeCompare(String(b.instance_id));
+  });
+}
+
+function setApprovalsCategoryFilter(workflowType) {
+  approvalsCategoryFilter = workflowType || '';
+  pagerResetPage('stew_approvals_' + approvalsMode);
+  currentApprovalItem = null;
+  currentApprovalRecordData = null;
+  document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select an item to approve or reject.</div>';
+  loadApprovalsQueue();
+}
+
+function approvalCategoryFilterHtml() {
+  const options = [`<option value="">All categories</option>`]
+    .concat(APPROVAL_CATEGORIES.map(([type, label]) =>
+      `<option value="${type}" ${approvalsCategoryFilter === type ? 'selected' : ''}>${label}</option>`));
+  return `
+    <select onchange="setApprovalsCategoryFilter(this.value)"
+      style="background:var(--panel-raised);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:11px;cursor:pointer;">
+      ${options.join('')}
+    </select>`;
+}
+
+async function loadApprovalsQueue() {
+  const pagerKey = 'stew_approvals_' + approvalsMode;
+  pagerState(pagerKey, loadApprovalsQueue);
+  const panel = document.getElementById('queuePanel');
+  const base = approvalsMode === 'pending' ? `${API}/workflows/pending` : `${API}/workflows/mine`;
+  // Sorting/filtering apply across the *whole* list, not just whatever slice
+  // the server's own limit/offset would return -- so this fetches everything
+  // once and paginates client-side over the sorted, filtered array.
+  const res = await fetch(`${base}?limit=10000&offset=0`, { headers: authHeaders() });
+  if (!res.ok) return;
+  const raw = await res.json();
+  const scoped = raw.items.filter(inst => STEWARDSHIP_WORKFLOW_TYPES.includes(inst.workflow_type));
+  const filtered = approvalsCategoryFilter
+    ? scoped.filter(inst => inst.workflow_type === approvalsCategoryFilter)
+    : scoped;
+  const items = sortApprovalItems(filtered);
+  pagerReconcile(pagerKey, items.length);
+  const { limit, offset } = pagerParams(pagerKey);
+  const pageItems = items.slice(offset, offset + limit);
+
+  document.getElementById('queueCount').textContent = items.length;
+  document.getElementById('queuePagination').innerHTML = pagerHtml(pagerKey, items.length);
+
+  const toggle = `
+    <div style="display:flex;gap:8px;padding:12px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+      <button class="view-tab ${approvalsMode === 'pending' ? 'active' : ''}" style="padding:6px 10px;font-size:12px;" onclick="setApprovalsMode('pending')">Awaiting my decision</button>
+      <button class="view-tab ${approvalsMode === 'mine' ? 'active' : ''}" style="padding:6px 10px;font-size:12px;" onclick="setApprovalsMode('mine')">My submissions</button>
+      <span style="margin-left:auto;">${approvalCategoryFilterHtml()}</span>
+    </div>`;
+
+  if (pageItems.length === 0) {
+    const emptyMsg = approvalsCategoryFilter
+      ? `No ${WORKFLOW_TYPE_LABELS[approvalsCategoryFilter] || approvalsCategoryFilter} items ${approvalsMode === 'pending' ? 'awaiting your decision' : 'in your submissions'}.`
+      : (approvalsMode === 'pending' ? 'Nothing awaiting your decision.' : 'You have not submitted anything yet.');
+    panel.innerHTML = toggle + `<div class="empty-state">${emptyMsg}</div>`;
+    return;
+  }
+  panel.innerHTML = toggle + pageItems.map(inst => `
+    <div class="queue-item" data-id="${inst.instance_id}" onclick="selectApprovalItem('${inst.instance_id}')">
+      <div class="qid">${WORKFLOW_TYPE_LABELS[inst.workflow_type] || inst.workflow_type} · ${inst.status.toUpperCase()}</div>
+      <div class="qname">${escapeApprovalText(summarizeInstance(inst))}</div>
+      <span class="qreason" style="color:var(--amber);background:rgba(232,165,75,0.1);">${approvalsMode === 'pending' ? currentStepLabel(inst) : 'by ' + inst.maker_label}</span>
+    </div>
+  `).join('');
+}
+
+function setApprovalsMode(mode) {
+  approvalsMode = mode;
+  pagerResetPage('stew_approvals_' + mode);
+  currentApprovalItem = null;
+  currentApprovalRecordData = null;
+  document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select an item to approve or reject.</div>';
+  updateQueueCountLabel();
+  loadApprovalsQueue();
+}
+
+async function selectApprovalItem(instanceId) {
+  document.querySelectorAll('.queue-item').forEach(el => el.classList.toggle('active', el.dataset.id === instanceId));
+  document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Loading…</div>';
+  const res = await fetch(`${API}/workflows/${instanceId}`, { headers: authHeaders() });
+  currentApprovalItem = await res.json();
+  currentApprovalRecordData = await fetchApprovalRecordData(currentApprovalItem);
+  renderApprovalDetail();
+}
+
+function renderApprovalDetail() {
+  const inst = currentApprovalItem;
+  const panel = document.getElementById('detailPanel');
+  const decisionsHtml = (inst.decisions || []).map(d => `
+    <div class="compare-row"><label>${escapeApprovalText(d.actor_label)} · step ${d.step_order}</label>
+    <div class="val">${d.decision.toUpperCase()}${d.comment ? ' — ' + escapeApprovalText(d.comment) : ''}</div></div>
+  `).join('') || '<div style="font-size:12px;color:var(--text-dim);">No decisions recorded yet.</div>';
+
+  const canDecide = approvalsMode === 'pending' && inst.status === 'pending';
+
+  panel.innerHTML = `
+    <div class="record-header">
+      <h2>${WORKFLOW_TYPE_LABELS[inst.workflow_type] || inst.workflow_type}</h2>
+      <span class="source-badge">${inst.status.toUpperCase()}</span>
+    </div>
+    <div class="reasons-box" style="background:var(--panel);border-color:var(--border);">
+      <div class="label" style="color:var(--text-dim);">SUBMITTED BY</div>
+      <ul><li>${escapeApprovalText(inst.maker_label)}</li></ul>
+    </div>
+    ${(() => {
+      const recordHtml = renderApprovalRecordSection(inst, currentApprovalRecordData);
+      return recordHtml ? `<div class="approval-record-frame">${recordHtml}</div>` : '';
+    })()}
+    <div class="ai-panel">
+      <div class="ai-header"><span class="dot"></span><span>${inst.status === 'pending' ? currentStepLabel(inst) : 'FINAL OUTCOME'}</span></div>
+      <div class="compare-grid" style="display:block;border:none;">
+        ${decisionsHtml}
+      </div>
+      ${inst.result ? `<div class="rationale" style="margin-top:10px;">Result: <code>${escapeApprovalText(JSON.stringify(inst.result))}</code></div>` : ''}
+    </div>
+    ${canDecide ? `
+    <div class="field" style="margin-bottom:16px;">
+      <label>COMMENT (optional)</label>
+      <input type="text" id="approvalComment" placeholder="Add a note for the audit trail…">
+    </div>
+    <div class="actions">
+      <button class="btn-resolve" onclick="decideApproval('approved')">Approve</button>
+      <button class="btn-reject" onclick="decideApproval('rejected')">Reject</button>
+    </div>` : ''}
+  `;
+}
+
+async function decideApproval(decision) {
+  const commentEl = document.getElementById('approvalComment');
+  const comment = commentEl ? (commentEl.value || null) : null;
+  const res = await fetch(`${API}/workflows/${currentApprovalItem.instance_id}/decide`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ decision, comment }),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    if (decision === 'approved' && data.status === 'approved' && data.result && data.result.temp_password) {
+      showToast(`Approved — workflow complete. One-time password: ${data.result.temp_password}`);
+    } else {
+      showToast(decision === 'approved'
+        ? (data.status === 'approved' ? 'Approved — workflow complete.' : `Approved — advanced to ${currentStepLabel(data)}.`)
+        : 'Rejected.');
+    }
+    currentApprovalItem = null;
+    currentApprovalRecordData = null;
+    document.getElementById('detailPanel').innerHTML = '<div class="empty-state">Select an item to approve or reject.</div>';
+    loadApprovalsQueue();
+  } else {
+    showToast(data.detail || 'Could not record your decision.', 'error');
+  }
+}
+
+function escapeApprovalText(str) {
+  return String(str).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+}
+
+function showToast(msg, kind) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.toggle('toast-error', kind === 'error');
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', kind === 'error' ? 6000 : 3000);
+}
+
+tryRestoreSession();
+</script>
+</body>
+</html>

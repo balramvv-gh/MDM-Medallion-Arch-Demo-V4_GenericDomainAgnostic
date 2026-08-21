@@ -1,0 +1,19 @@
+dbt-core==1.11.12
+dbt-duckdb==1.10.1
+duckdb==1.5.4
+pandas
+numpy
+scikit-learn
+faker
+fastapi
+uvicorn[standard]
+anthropic
+pydantic
+bcrypt
+
+# MCP agent orchestration (see agents/, mcp_server/, MCP_Agent_Orchestration_Design.docx)
+# Pinned below 2.0: the mcp SDK's 2.0 release (Aug 2026) restructured the server API
+# (mcp.server.fastmcp.FastMCP moved/changed); this project targets the well-documented
+# 1.x FastMCP API. Revisit this pin if/when the project moves to the 2.0 API deliberately.
+mcp>=1.9,<2.0
+croniter
