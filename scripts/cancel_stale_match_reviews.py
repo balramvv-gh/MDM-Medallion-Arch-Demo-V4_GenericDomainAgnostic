@@ -1,11 +1,13 @@
 """
 Batch-path trigger for cancelling a stale Match Review pair: detects when an
-updated version of a source record (same source_system+source_record_id) has
-landed in main_silver.silver_customers since the last time this script ran --
-which, for the batch pipeline, means since the last `dbt run --exclude gold.*`
-rebuilt silver from bronze -- and cancels any Match Review pair that record is
-part of and that is still open ('pending'/'in_review', or 'confirmed' but not
-yet actually merged into gold).
+updated version of a source record (same domain_key+source_system+
+source_record_id) has landed in main_silver.records since the last time this
+script ran -- which, for the batch pipeline, means since the last
+`dbt run --exclude gold.*` rebuilt silver from bronze -- and cancels any
+Match Review pair that record is part of and that is still open
+('pending'/'in_review', or 'confirmed' but not yet actually merged into
+gold). Runs across every domain in one pass (main_silver.records already
+holds every domain's records); no per-domain loop needed here.
 
 Runs as its own step in scripts/build_pipeline.py, between the silver dbt run
 and scripts/generate_matches.py -- it has to run before generate_matches.py so
@@ -20,9 +22,9 @@ deliberately in lockstep with a comment" convention already used for
 TRANSFORM_FUNCTIONS/PY_TRANSFORMS/SQL_TRANSFORMS between this directory and
 api/reprocessing.py.
 
-Detection: unlike gold (audit.gold_customers_snapshot / audit_pipeline_diff.py),
+Detection: unlike gold (audit.golden_records_snapshot / audit_pipeline_diff.py),
 silver has no other diff mechanism -- dbt CREATE OR REPLACEs the whole table
-every run. stewardship.silver_customers_snapshot (source_system,
+every run. stewardship.silver_records_snapshot (domain_key, source_system,
 source_record_id, source_modified_date) is this script's own point-in-time
 snapshot, refreshed at the end of every run. A key whose source_modified_date
 differs from the snapshot (or is new since the snapshot) is a changed source
@@ -66,11 +68,12 @@ def _ensure_tables(con):
         );
     """)
     con.execute("""
-        CREATE TABLE IF NOT EXISTS stewardship.silver_customers_snapshot (
+        CREATE TABLE IF NOT EXISTS stewardship.silver_records_snapshot (
+            domain_key VARCHAR,
             source_system VARCHAR,
             source_record_id VARCHAR,
             source_modified_date TIMESTAMP,
-            PRIMARY KEY (source_system, source_record_id)
+            PRIMARY KEY (domain_key, source_system, source_record_id)
         );
     """)
 
@@ -83,7 +86,7 @@ def _table_exists(con, schema, table):
     return row[0] > 0
 
 
-def _cancel_stale_match_reviews_for_key(con, source_system, source_record_id, now) -> list:
+def _cancel_stale_match_reviews_for_key(con, domain_key, source_system, source_record_id, now) -> list:
     """Same logic as api/reprocessing.py's _cancel_stale_match_reviews, against
     a raw duckdb connection instead of api/db.py's run_query/run_write -- see
     module docstring for why this is a parallel implementation, not a shared
@@ -100,17 +103,19 @@ def _cancel_stale_match_reviews_for_key(con, source_system, source_record_id, no
         candidates = con.execute("""
             SELECT pair_id, source_system_a, source_record_id_a, source_system_b, source_record_id_b
             FROM gold_prep.match_review_candidates
-            WHERE (source_system_a = ? AND source_record_id_a = ?)
-               OR (source_system_b = ? AND source_record_id_b = ?)
-        """, [source_system, source_record_id, source_system, source_record_id]).fetchdf()
+            WHERE domain_key = ?
+              AND ((source_system_a = ? AND source_record_id_a = ?)
+               OR (source_system_b = ? AND source_record_id_b = ?))
+        """, [domain_key, source_system, source_record_id, source_system, source_record_id]).fetchdf()
 
     if _table_exists(con, "main_gold", "gold_match_review_queue"):
         queue_candidates = con.execute("""
             SELECT pair_id, source_system_a, source_record_id_a, source_system_b, source_record_id_b
             FROM main_gold.gold_match_review_queue
-            WHERE (source_system_a = ? AND source_record_id_a = ?)
-               OR (source_system_b = ? AND source_record_id_b = ?)
-        """, [source_system, source_record_id, source_system, source_record_id]).fetchdf()
+            WHERE domain_key = ?
+              AND ((source_system_a = ? AND source_record_id_a = ?)
+               OR (source_system_b = ? AND source_record_id_b = ?))
+        """, [domain_key, source_system, source_record_id, source_system, source_record_id]).fetchdf()
         if not queue_candidates.empty:
             known_pair_ids = set(candidates["pair_id"]) if not candidates.empty else set()
             extra = queue_candidates[~queue_candidates["pair_id"].isin(known_pair_ids)]
@@ -143,10 +148,10 @@ def _cancel_stale_match_reviews_for_key(con, source_system, source_record_id, no
                 SELECT 1
                 FROM main_gold.gold_crosswalk a
                 JOIN main_gold.gold_crosswalk b ON a.golden_id = b.golden_id
-                WHERE a.source_system = ? AND a.source_record_id = ?
-                  AND b.source_system = ? AND b.source_record_id = ?
-            """, [row["source_system_a"], row["source_record_id_a"],
-                  row["source_system_b"], row["source_record_id_b"]]).fetchdf()
+                WHERE a.domain_key = ? AND a.source_system = ? AND a.source_record_id = ?
+                  AND b.domain_key = ? AND b.source_system = ? AND b.source_record_id = ?
+            """, [domain_key, row["source_system_a"], row["source_record_id_a"],
+                  domain_key, row["source_system_b"], row["source_record_id_b"]]).fetchdf()
             if not merged.empty:
                 continue  # already realized -- nothing to cancel
 
@@ -167,38 +172,41 @@ def main():
     con = duckdb.connect(DB_PATH)
     _ensure_tables(con)
 
-    if not _table_exists(con, "main_silver", "silver_customers"):
-        print("main_silver.silver_customers doesn't exist yet -- nothing to diff, skipping.")
+    if not _table_exists(con, "main_silver", "records"):
+        print("main_silver.records doesn't exist yet -- nothing to diff, skipping.")
         con.close()
         return
 
-    current = con.execute(
-        "SELECT source_system, source_record_id, source_modified_date FROM main_silver.silver_customers"
-    ).fetchdf()
+    current = con.execute("""
+        SELECT domain_key, source_system, source_record_id,
+               try_cast(attributes->>'source_modified_date' as timestamp) as source_modified_date
+        FROM main_silver.records
+    """).fetchdf()
     prior = con.execute(
-        "SELECT source_system, source_record_id, source_modified_date FROM stewardship.silver_customers_snapshot"
+        "SELECT domain_key, source_system, source_record_id, source_modified_date FROM stewardship.silver_records_snapshot"
     ).fetchdf()
     prior_by_key = {
-        (r["source_system"], r["source_record_id"]): r["source_modified_date"]
+        (r["domain_key"], r["source_system"], r["source_record_id"]): r["source_modified_date"]
         for _, r in prior.iterrows()
     }
 
     now = datetime.now(timezone.utc)
     changed_keys = []
     for _, row in current.iterrows():
-        key = (row["source_system"], row["source_record_id"])
+        key = (row["domain_key"], row["source_system"], row["source_record_id"])
         if key in prior_by_key and prior_by_key[key] != row["source_modified_date"]:
             changed_keys.append(key)
 
     total_cancelled = []
-    for source_system, source_record_id in changed_keys:
-        total_cancelled += _cancel_stale_match_reviews_for_key(con, source_system, source_record_id, now)
+    for domain_key, source_system, source_record_id in changed_keys:
+        total_cancelled += _cancel_stale_match_reviews_for_key(con, domain_key, source_system, source_record_id, now)
 
     # Refresh the snapshot for next run.
-    con.execute("DELETE FROM stewardship.silver_customers_snapshot;")
+    con.execute("DELETE FROM stewardship.silver_records_snapshot;")
     con.executemany(
-        "INSERT INTO stewardship.silver_customers_snapshot VALUES (?, ?, ?)",
-        [(r["source_system"], r["source_record_id"], r["source_modified_date"]) for _, r in current.iterrows()],
+        "INSERT INTO stewardship.silver_records_snapshot VALUES (?, ?, ?, ?)",
+        [(r["domain_key"], r["source_system"], r["source_record_id"], r["source_modified_date"])
+         for _, r in current.iterrows()],
     )
 
     con.close()

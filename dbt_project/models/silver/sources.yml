@@ -16,6 +16,29 @@ sources:
       - name: ref_state_codes
         description: Two-letter US state codes (50 states + DC) with a human-readable state_name and is_active flag.
 
+  - name: governance
+    schema: governance
+    description: >
+      Phase 2 (domain-agnostic) metadata layer -- which domains/sources
+      exist, each domain's attribute list, and how each source's raw fields
+      map onto those attributes. DB-native tables maintained via
+      scripts/ensure_domain_metadata.py / api/db.py's mirror (same
+      "Python/API writes it, dbt reads it as a source" pattern used for
+      bus_rules below) -- not a dbt seed. Read at compile time by
+      macros/active_domain_sources.sql, macros/mapped_attributes.sql, and
+      macros/validation_block.sql to build models/silver/stg_source_records.sql
+      generically for every domain/source, with no domain or source name
+      hardcoded in any model file.
+    tables:
+      - name: domain_registry
+        description: Which domains exist (customer, product, ...), display labels, and pipeline_status ('live' | 'planned').
+      - name: domain_source_systems
+        description: Which source systems feed each domain (e.g. customer <- CRM, ERP). Drives which UNION branches stg_source_records.sql builds.
+      - name: domain_attributes
+        description: Each domain's canonical field list (attribute_key, display_label, data_type, required/matching flags) -- the domain-level analogue of entity_type_registry.
+      - name: source_field_mappings
+        description: How each source's raw column(s) map onto a domain's attribute_keys, plus which standardization transform to apply (macros/transform_expr.sql).
+
   - name: bus_rules
     schema: bus_rules
     description: >
@@ -27,10 +50,10 @@ sources:
       dbt reads it as a source" pattern used for gold_prep.
     tables:
       - name: column_rules
-        description: Field-level validation/standardization rules applied in stg_crm_customers.sql/stg_erp_customers.sql (informational reference here; the actual logic is hardcoded per-column in those models and mirrored in api/validation.py).
+        description: Field-level validation/standardization rules, keyed by (domain_key, attribute_key) since Phase 2 (scripts/migrate_column_rules_to_domain.py) -- read generically at compile time by macros/validation_block.sql to build models/silver/stg_source_records.sql for every domain/source, and mirrored in api/validation.py for the API's own record-level checks.
       - name: matching_rules
-        description: Per-tier field roles (exact_match_field, similarity_text_field, blocking_key) consumed by scripts/generate_matches.py and api/reprocessing.py.
+        description: Per-tier attribute roles (exact_match_field, similarity_text_field, blocking_key), domain_key/attribute_key-scoped since Phase 3 (scripts/migrate_matching_rules_to_domain.py) -- consumed by scripts/generate_matches.py and api/reprocessing.py.
       - name: matching_thresholds
-        description: Tier definitions (order, method, auto-merge/review thresholds) consumed by scripts/generate_matches.py, api/reprocessing.py, and gold_crosswalk.sql.
+        description: Tier definitions (order, method, auto-merge/review thresholds), domain_key-scoped since Phase 3 -- consumed by scripts/generate_matches.py, api/reprocessing.py, and gold_crosswalk.sql.
       - name: survivorship_rules
-        description: One active rule per gold_customers target_column, driving attribute-level survivorship in gold_customers.sql/gold_crosswalk.sql.
+        description: At most one active rule per (domain_key, attribute_key) since Phase 3, driving attribute-level survivorship in gold_survivorship_winners.sql/golden_records.sql/gold_crosswalk.sql.

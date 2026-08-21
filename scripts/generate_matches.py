@@ -1,7 +1,7 @@
 """
 Match/merge step: embedding-based duplicate detection over the silver layer.
 
-Runs BETWEEN silver and gold in the build sequence (silver_customers must
+Runs BETWEEN silver and gold in the build sequence (silver.records must
 already exist; the gold layer reads this script's output as a dbt source --
 see dbt_project/models/gold/gold_match_candidates.sql):
 
@@ -19,13 +19,28 @@ for a single coherent matching pass; the gold dbt models just consume the
 result as a source table, the same pattern already used for the bronze layer
 (scripts/load_bronze.py Python-loads bronze; dbt treats it as a source).
 
+Phase 3 (domain-agnostic): this script now runs its matching algorithm once
+PER DOMAIN, discovered generically from which domain_keys have at least one
+active bus_rules.matching_thresholds row (see _domains_with_matching_config)
+-- exactly the same "metadata's presence is the activation signal, not a
+hardcoded name" pattern dbt_project/macros/active_domain_sources.sql already
+uses for silver. Today only 'customer' has any matching_rules/
+matching_thresholds rows, so only 'customer' runs -- a second live domain is
+onboarded purely by adding its own rows to those two tables (now domain_key-
+scoped, see scripts/migrate_matching_rules_to_domain.py), never by changing
+this file. gold_prep.match_groups/match_edges/match_review_candidates are
+shared tables across every domain (like bronze.raw_records) -- each domain's
+run DELETEs and re-inserts only its own domain_key's rows, never another
+domain's.
+
 Matching is metadata-driven, not hardcoded. Tier definitions and thresholds
-live in bus_rules.matching_thresholds; the fields/columns each tier actually
-operates on live in bus_rules.matching_rules, a child table keyed by tier_id.
-Both are DB-native tables (not dbt seeds) maintained via the Rules
-Configuration screen's maker-checker workflow -- same "read from a DuckDB
-table at runtime instead of hardcoded" principle as before, just no longer
-sourced from a static CSV seed.
+live in bus_rules.matching_thresholds; the fields/attributes each tier
+actually operates on live in bus_rules.matching_rules, a child table keyed by
+tier_id, now referencing domain_attributes.attribute_key (matching_rules'
+own source_column is kept for reference/history, not dropped -- same
+additive-migration convention as bus_rules.column_rules). Both are DB-native
+tables (not dbt seeds) maintained via the Rules Configuration screen's
+maker-checker workflow.
 
 Two-tier matching strategy, as configured today in the seeds (more tiers can
 be added by adding rows -- each tier's match_method must be either 'exact'
@@ -39,12 +54,12 @@ or 'fuzzy_tfidf_cosine' for this script to know how to evaluate it):
 
   Tier 2 (match_method='fuzzy_tfidf_cosine'): candidate pairs are generated
     via blocking (grouped by the tier's blocking_key rule(s) -- avoids O(n^2)
-    comparisons at scale; today a single column, state_code, but multiple
-    blocking_key rows compose into a multi-column key), then scored by cosine
-    similarity over TF-IDF character n-gram vectors built from the tier's
-    similarity_text_field columns, concatenated in rule_order (today:
-    first_name, last_name, address_line1, address_line2, city --
-    matching_rules.csv rows MR003-MR007). Deliberately excludes any column
+    comparisons at scale; today a single attribute, state_code, but multiple
+    blocking_key rows compose into a multi-attribute key), then scored by
+    cosine similarity over TF-IDF character n-gram vectors built from the
+    tier's similarity_text_field attributes, concatenated in rule_order
+    (today: first_name, last_name, address_line1, address_line2, city --
+    matching_rules.csv rows MR003-MR007). Deliberately excludes any attribute
     not listed as a similarity_text_field for the tier -- email/phone are
     intentionally absent (those are exactly the fields tier 2 exists to
     catch disagreement on; including them would dilute the name/address
@@ -78,9 +93,12 @@ Clustering: Union-Find (path compression + union by rank) over every edge that
 should auto-merge (tier-1 exact, tier-2 >= auto_merge_threshold, tier-2
 confirmed by a steward). Borderline non-overridden pairs are NOT unioned --
 they surface in the review queue instead. match_group_id is assigned by
-sorting clusters on their lowest (source_system, source_record_id) member, so
-IDs are stable across reruns as long as the underlying silver population
-doesn't change.
+sorting clusters on their lowest (source_system, source_record_id) member
+WITHIN a domain (match_group_id is only ever compared to another edge/candidate
+row of the same domain_key downstream, so reusing small integers per domain
+is fine -- gold_customers.sql's golden_id is derived from (domain_key,
+match_group_id) together, not match_group_id alone), so IDs are stable
+across reruns as long as the underlying silver population doesn't change.
 
 Known simplification: this batch step is the only place fuzzy
 (match_method='fuzzy_tfidf_cosine') matching runs. The real-time reprocessing
@@ -122,6 +140,7 @@ api/reprocessing.py's _cancel_stale_match_reviews, and
 scripts/cancel_stale_match_reviews.py for the batch-path trigger).
 """
 import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -153,23 +172,23 @@ def _apply_transform(transform_function, value):
 
 
 def _combined_text(row, similarity_rules):
-    """Concatenates a tier's similarity_text_field columns, in rule_order, after
-    each column's transform_function is applied."""
+    """Concatenates a tier's similarity_text_field attributes, in rule_order,
+    after each attribute's transform_function is applied."""
     parts = []
     for rule in similarity_rules:
-        val = _apply_transform(rule["transform_function"], row.get(rule["source_column"]))
+        val = _apply_transform(rule["transform_function"], row.get(rule["attribute_key"]))
         parts.append(str(val) if val else "")
     return " ".join(p for p in parts if p)
 
 
 def _blocking_key(row, blocking_rules):
     """Composes a tier's blocking_key rule(s), in rule_order, into a single
-    grouping key. Multiple rows compose into a multi-column composite key."""
+    grouping key. Multiple rows compose into a multi-attribute composite key."""
     if not blocking_rules:
         return None
     parts = []
     for rule in blocking_rules:
-        val = _apply_transform(rule["transform_function"], row.get(rule["source_column"]))
+        val = _apply_transform(rule["transform_function"], row.get(rule["attribute_key"]))
         parts.append(str(val) if val is not None else "")
     return "||".join(parts)
 
@@ -228,29 +247,60 @@ def _ensure_match_review_tables(con):
     """)
 
 
-def _table_exists(con, schema, table):
-    row = con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
-        [schema, table],
-    ).fetchone()
-    return row[0] > 0
+def _ensure_gold_prep_tables(con):
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold_prep;")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS gold_prep.match_groups (
+            domain_key VARCHAR, source_system VARCHAR, source_record_id VARCHAR, match_group_id INTEGER
+        );
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS gold_prep.match_edges (
+            domain_key VARCHAR,
+            source_system_a VARCHAR, source_record_id_a VARCHAR,
+            source_system_b VARCHAR, source_record_id_b VARCHAR,
+            match_type VARCHAR, confidence DOUBLE, created_ts TIMESTAMP
+        );
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS gold_prep.match_review_candidates (
+            domain_key VARCHAR,
+            pair_id VARCHAR, source_system_a VARCHAR, source_record_id_a VARCHAR,
+            source_system_b VARCHAR, source_record_id_b VARCHAR,
+            similarity_score DOUBLE, blocking_key VARCHAR, generated_ts TIMESTAMP
+        );
+    """)
 
 
-def _load_matching_metadata(con):
+def _domains_with_matching_config(con):
+    """The generic activation signal for 'this domain runs matching': it has
+    at least one active bus_rules.matching_thresholds row. Mirrors
+    dbt_project/macros/active_domain_sources.sql's convention -- a domain is
+    onboarded into matching purely by adding rows to matching_thresholds/
+    matching_rules, never by editing this script."""
+    return [
+        r[0] for r in con.execute(
+            "SELECT DISTINCT domain_key FROM bus_rules.matching_thresholds WHERE active"
+        ).fetchall()
+    ]
+
+
+def _load_matching_metadata(con, domain_key):
     """Reads the two matching tables (bus_rules schema, DB-native, maintained
-    via the Rules Configuration screen's maker-checker workflow) and returns
-    (tiers, rules_by_tier), where tiers is the list of active tier rows (as
-    dicts) from matching_thresholds, and rules_by_tier maps tier_id -> list of
-    that tier's active rule rows from matching_rules, in rule_order."""
+    via the Rules Configuration screen's maker-checker workflow), scoped to
+    one domain, and returns (tiers, rules_by_tier), where tiers is the list
+    of that domain's active tier rows (as dicts) from matching_thresholds,
+    and rules_by_tier maps tier_id -> list of that tier's active rule rows
+    from matching_rules, in rule_order."""
     thresholds = con.execute("""
         SELECT * FROM bus_rules.matching_thresholds
-        WHERE active ORDER BY tier_order
-    """).fetchdf().to_dict(orient="records")
+        WHERE active AND domain_key = ? ORDER BY tier_order
+    """, [domain_key]).fetchdf().to_dict(orient="records")
 
     rules = con.execute("""
         SELECT * FROM bus_rules.matching_rules
-        WHERE active ORDER BY tier_id, rule_order
-    """).fetchdf().to_dict(orient="records")
+        WHERE active AND domain_key = ? ORDER BY tier_id, rule_order
+    """, [domain_key]).fetchdf().to_dict(orient="records")
 
     rules_by_tier = {}
     for r in rules:
@@ -259,11 +309,13 @@ def _load_matching_metadata(con):
     return thresholds, rules_by_tier
 
 
-def main():
-    con = duckdb.connect(DB_PATH)
-    _ensure_match_review_tables(con)
-
-    thresholds, rules_by_tier = _load_matching_metadata(con)
+def _run_domain_matching(con, domain_key, now):
+    """Runs the full tier-1/tier-2 matching algorithm for one domain and
+    returns (match_group_rows, edge_rows, review_candidate_rows) -- each
+    already tagged with domain_key, ready to insert into the shared
+    gold_prep tables. Identical algorithm to pre-Phase-3, just parameterized
+    on domain_key instead of assuming 'customer'."""
+    thresholds, rules_by_tier = _load_matching_metadata(con, domain_key)
     match_tiers = [t for t in thresholds if t["is_match_tier"]]
 
     # Phase 0 (flexibility hardening): this script only knows how to execute
@@ -273,44 +325,52 @@ def main():
     # entirely (next(...) only ever finds the first match), so a steward
     # could approve a new matching tier through the Rules Configuration UI
     # and it would just do nothing, with no error anywhere. Fail loudly
-    # instead until Phase 2 adds a real handler-registry for match_method
+    # instead until a real handler-registry for match_method exists
     # (mirroring TRANSFORM_FUNCTIONS above).
     KNOWN_MATCH_METHODS = {"exact", "fuzzy_tfidf_cosine"}
     unknown_methods = {t["match_method"] for t in match_tiers} - KNOWN_MATCH_METHODS
     if unknown_methods:
         raise RuntimeError(
-            f"bus_rules.matching_thresholds has active tier(s) with match_method "
+            f"bus_rules.matching_thresholds has active tier(s) for domain '{domain_key}' with match_method "
             f"{sorted(unknown_methods)} -- no matching logic is implemented for "
             f"{'that' if len(unknown_methods) == 1 else 'those'} yet, so "
             f"{'it' if len(unknown_methods) == 1 else 'they'} would silently be "
             f"excluded from matching. Known methods: {sorted(KNOWN_MATCH_METHODS)}. "
-            f"Add a handler in scripts/generate_matches.py (Phase 2) before using "
-            f"this match_method."
+            f"Add a handler in scripts/generate_matches.py before using this match_method."
         )
     exact_tiers = [t for t in match_tiers if t["match_method"] == "exact"]
     fuzzy_tiers = [t for t in match_tiers if t["match_method"] == "fuzzy_tfidf_cosine"]
     if len(exact_tiers) > 1 or len(fuzzy_tiers) > 1:
         raise RuntimeError(
-            "Only one active tier per match_method is currently supported "
-            "('exact', 'fuzzy_tfidf_cosine') -- found multiple active tiers "
-            "sharing the same match_method in bus_rules.matching_thresholds, "
-            "and only the first would actually be used, silently ignoring the "
-            "rest. Deactivate the extras, or extend this script (Phase 2) to "
-            "support multiple tiers per method."
+            f"Only one active tier per match_method is currently supported "
+            f"('exact', 'fuzzy_tfidf_cosine') -- domain '{domain_key}' has multiple active tiers "
+            f"sharing the same match_method in bus_rules.matching_thresholds, "
+            f"and only the first would actually be used, silently ignoring the "
+            f"rest. Deactivate the extras, or extend this script to support "
+            f"multiple tiers per method."
         )
     tier1 = exact_tiers[0] if exact_tiers else None
     tier2 = fuzzy_tiers[0] if fuzzy_tiers else None
     if tier1 is None:
         raise RuntimeError(
-            "No active tier with match_method='exact' found in "
-            "bus_rules.matching_thresholds -- at least one exact tier is required."
+            f"No active tier with match_method='exact' found in bus_rules.matching_thresholds "
+            f"for domain '{domain_key}' -- at least one exact tier is required."
         )
 
     exact_rules = [r for r in rules_by_tier.get(tier1["tier_id"], []) if r["rule_role"] == "exact_match_field"]
     tier1_confidence = float(tier1["auto_merge_threshold"])
 
-    silver = con.execute("SELECT * FROM main_silver.silver_customers").fetchdf()
-    records = silver.to_dict(orient="records")
+    silver_df = con.execute(
+        "SELECT source_system, source_record_id, attributes FROM main_silver.records WHERE domain_key = ?",
+        [domain_key],
+    ).fetchdf()
+    records = []
+    for _, srow in silver_df.iterrows():
+        attrs = json.loads(srow["attributes"]) if srow["attributes"] else {}
+        rec = dict(attrs)
+        rec["source_system"] = srow["source_system"]
+        rec["source_record_id"] = srow["source_record_id"]
+        records.append(rec)
     keys = [(r["source_system"], r["source_record_id"]) for r in records]
     by_key = dict(zip(keys, records))
 
@@ -320,22 +380,20 @@ def main():
     override_status = dict(zip(overrides["pair_id"], overrides["status"]))
 
     # --- Match Review hold: figure out which silver records sit out of this
-    # run entirely (see docstring at top of file). 'confirmed' is deliberately
+    # run entirely (see module docstring). 'confirmed' is deliberately
     # excluded from the hold set -- this run needs to still process it, to
     # actually realize the merge. Identity for a held pair (which two source
-    # records it's between) comes from gold_prep.match_review_candidates as it
-    # existed BEFORE this run rebuilds it -- that table is this script's own
-    # last-written output, so it's authoritative regardless of whether a
-    # `dbt run --select gold.*` has happened since (main_gold.gold_match_review_queue
-    # could be a cycle stale if not).
+    # records it's between) comes from THIS DOMAIN's slice of
+    # gold_prep.match_review_candidates as it existed BEFORE this run
+    # rebuilds it -- that table is this script's own last-written output, so
+    # it's authoritative regardless of whether a `dbt run --select gold.*`
+    # has happened since.
     OPEN_HOLD_STATUSES = {"pending", "in_review"}
     on_hold_pair_ids = {pid for pid, status in override_status.items() if status in OPEN_HOLD_STATUSES}
 
-    prior_candidates = []
-    if _table_exists(con, "gold_prep", "match_review_candidates"):
-        prior_candidates = con.execute(
-            "SELECT * FROM gold_prep.match_review_candidates"
-        ).fetchdf().to_dict(orient="records")
+    prior_candidates = con.execute(
+        "SELECT * FROM gold_prep.match_review_candidates WHERE domain_key = ?", [domain_key]
+    ).fetchdf().to_dict(orient="records")
 
     on_hold_keys = set()
     carried_forward_candidates = []
@@ -346,14 +404,14 @@ def main():
         on_hold_keys.add((row["source_system_a"], row["source_record_id_a"]))
         on_hold_keys.add((row["source_system_b"], row["source_record_id_b"]))
 
-    # --- Tier 1: exact edges, one field-value grouping per active exact_match_field rule ---
+    # --- Tier 1: exact edges, one attribute-value grouping per active exact_match_field rule ---
     exact_edges = []  # (key_a, key_b, confidence)
     for rule in exact_rules:
         groups = {}
         for k, r in by_key.items():
             if k in on_hold_keys:
                 continue  # sits out of this run entirely, see Match Review hold docstring
-            val = _apply_transform(rule["transform_function"], r.get(rule["source_column"]))
+            val = _apply_transform(rule["transform_function"], r.get(rule["attribute_key"]))
             if val:
                 groups.setdefault(val, []).append(k)
         for group in groups.values():
@@ -432,66 +490,70 @@ def main():
         for k in clusters[root]:
             match_group_id[k] = gid
 
-    now = datetime.now(timezone.utc)
-
-    # --- Write results ---
-    con.execute("CREATE SCHEMA IF NOT EXISTS gold_prep;")
-
-    con.execute("""
-        CREATE OR REPLACE TABLE gold_prep.match_groups (
-            source_system VARCHAR, source_record_id VARCHAR, match_group_id INTEGER
-        );
-    """)
-    con.executemany(
-        "INSERT INTO gold_prep.match_groups VALUES (?, ?, ?)",
-        [(k[0], k[1], match_group_id[k]) for k in keys],
-    )
-
-    con.execute("""
-        CREATE OR REPLACE TABLE gold_prep.match_edges (
-            source_system_a VARCHAR, source_record_id_a VARCHAR,
-            source_system_b VARCHAR, source_record_id_b VARCHAR,
-            match_type VARCHAR, confidence DOUBLE, created_ts TIMESTAMP
-        );
-    """)
+    group_rows = [(domain_key, k[0], k[1], match_group_id[k]) for k in keys]
     edge_rows = (
-        [(a[0], a[1], b[0], b[1], "exact", conf, now) for a, b, conf in exact_edges]
-        + [(a[0], a[1], b[0], b[1], "fuzzy_auto", conf, now) for a, b, conf in fuzzy_auto_edges]
-        + [(a[0], a[1], b[0], b[1], "fuzzy_confirmed", conf, now) for a, b, conf in fuzzy_confirmed_edges]
+        [(domain_key, a[0], a[1], b[0], b[1], "exact", conf, now) for a, b, conf in exact_edges]
+        + [(domain_key, a[0], a[1], b[0], b[1], "fuzzy_auto", conf, now) for a, b, conf in fuzzy_auto_edges]
+        + [(domain_key, a[0], a[1], b[0], b[1], "fuzzy_confirmed", conf, now) for a, b, conf in fuzzy_confirmed_edges]
     )
-    if edge_rows:
-        con.executemany("INSERT INTO gold_prep.match_edges VALUES (?, ?, ?, ?, ?, ?, ?)", edge_rows)
-
-    con.execute("""
-        CREATE OR REPLACE TABLE gold_prep.match_review_candidates (
-            pair_id VARCHAR, source_system_a VARCHAR, source_record_id_a VARCHAR,
-            source_system_b VARCHAR, source_record_id_b VARCHAR,
-            similarity_score DOUBLE, blocking_key VARCHAR, generated_ts TIMESTAMP
-        );
-    """)
     # Held pairs' rows are carried forward frozen (their own original
     # generated_ts, not this run's `now`) alongside freshly computed ones --
-    # see Match Review hold in the docstring at top of file.
+    # see Match Review hold in the module docstring.
     all_review_candidates = review_candidates + carried_forward_candidates
-    if all_review_candidates:
-        con.executemany(
-            "INSERT INTO gold_prep.match_review_candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(rc["pair_id"], rc["source_system_a"], rc["source_record_id_a"],
-              rc["source_system_b"], rc["source_record_id_b"], rc["similarity_score"],
-              rc["blocking_key"], rc.get("generated_ts", now)) for rc in all_review_candidates],
-        )
-
-    con.close()
+    review_rows = [
+        (domain_key, rc["pair_id"], rc["source_system_a"], rc["source_record_id_a"],
+         rc["source_system_b"], rc["source_record_id_b"], rc["similarity_score"],
+         rc["blocking_key"], rc.get("generated_ts", now))
+        for rc in all_review_candidates
+    ]
 
     tau_high_display = tier2["auto_merge_threshold"] if tier2 is not None else "n/a"
     tau_low_display = tier2["review_lower_threshold"] if tier2 is not None else "n/a"
-    print(f"Matching complete: {len(keys)} silver records -> {len(ordered_roots)} match groups")
-    print(f"  on-hold (excluded from this run, open match review): {len(on_hold_keys)} silver records")
-    print(f"  tier-1 exact edges: {len(exact_edges)}")
-    print(f"  tier-2 auto-merge edges (>= {tau_high_display}): {len(fuzzy_auto_edges)}")
-    print(f"  tier-2 steward-confirmed edges: {len(fuzzy_confirmed_edges)}")
-    print(f"  match review candidates ({tau_low_display}-{tau_high_display}, this run): {len(review_candidates)}"
+    print(f"  [{domain_key}] {len(keys)} silver records -> {len(ordered_roots)} match groups")
+    print(f"    on-hold (excluded from this run, open match review): {len(on_hold_keys)} silver records")
+    print(f"    tier-1 exact edges: {len(exact_edges)}")
+    print(f"    tier-2 auto-merge edges (>= {tau_high_display}): {len(fuzzy_auto_edges)}")
+    print(f"    tier-2 steward-confirmed edges: {len(fuzzy_confirmed_edges)}")
+    print(f"    match review candidates ({tau_low_display}-{tau_high_display}, this run): {len(review_candidates)}"
           f" + {len(carried_forward_candidates)} carried forward (held)")
+
+    return group_rows, edge_rows, review_rows
+
+
+def main():
+    con = duckdb.connect(DB_PATH)
+    _ensure_match_review_tables(con)
+    _ensure_gold_prep_tables(con)
+
+    domains = _domains_with_matching_config(con)
+    if not domains:
+        print("No domain has any active bus_rules.matching_thresholds row -- nothing to match.")
+        con.close()
+        return
+
+    now = datetime.now(timezone.utc)
+    print(f"Matching {len(domains)} domain(s): {domains}")
+
+    for domain_key in domains:
+        group_rows, edge_rows, review_rows = _run_domain_matching(con, domain_key, now)
+
+        # gold_prep.* are shared across every domain (like bronze.raw_records)
+        # -- each domain's run replaces only its own domain_key's rows.
+        con.execute("DELETE FROM gold_prep.match_groups WHERE domain_key = ?", [domain_key])
+        if group_rows:
+            con.executemany("INSERT INTO gold_prep.match_groups VALUES (?, ?, ?, ?)", group_rows)
+
+        con.execute("DELETE FROM gold_prep.match_edges WHERE domain_key = ?", [domain_key])
+        if edge_rows:
+            con.executemany("INSERT INTO gold_prep.match_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?)", edge_rows)
+
+        con.execute("DELETE FROM gold_prep.match_review_candidates WHERE domain_key = ?", [domain_key])
+        if review_rows:
+            con.executemany(
+                "INSERT INTO gold_prep.match_review_candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", review_rows
+            )
+
+    con.close()
 
 
 if __name__ == "__main__":

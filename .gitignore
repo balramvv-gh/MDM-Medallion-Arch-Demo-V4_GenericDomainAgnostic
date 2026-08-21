@@ -1,25 +1,10 @@
-# Python
 __pycache__/
 *.pyc
-venv/
 .venv/
-
-# dbt
+venv/
+node_modules/
+*.wal
+.DS_Store
 dbt_project/target/
 dbt_project/logs/
-
-# DuckDB database files -- regenerated locally by scripts/generate_source_data.py
-# + scripts/load_bronze.py + scripts/build_pipeline.py (or scripts/create_admin_user.py
-# for auth). Not committed: it's build output, not source, and would blow up repo
-# size/diffs on every pipeline run. See README.md for the full rebuild steps.
-*.duckdb
-*.duckdb.wal
-
-# Generated synthetic source data + its persisted generator state
-# (data/generate_source_data.py) -- regenerable, not source.
-data/sources/*.csv
-data/sources/_state/
-
-# OS/editor cruft
-.DS_Store
-Thumbs.db
+dbt_project/dbt_packages/

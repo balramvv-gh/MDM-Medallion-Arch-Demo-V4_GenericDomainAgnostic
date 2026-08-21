@@ -9,6 +9,11 @@ Runs the full pipeline build in order, cross-platform (Windows/macOS/Linux):
                                               user_domain_access -- see that script's
                                               docstring; additive-only, order relative to
                                               step 0 doesn't matter, kept adjacent)
+  0.6. python scripts/migrate_column_rules_to_domain.py       (bus_rules.column_rules ->
+                                              domain_key/attribute_key-scoped; idempotent)
+  0.7. python scripts/migrate_matching_rules_to_domain.py     (bus_rules.matching_rules/
+                                              matching_thresholds/survivorship_rules ->
+                                              domain_key-scoped; idempotent)
   1. dbt seed
   2. dbt run --exclude gold.*          (bronze is already loaded separately, see below)
   2.5. python scripts/cancel_stale_match_reviews.py  (cancels any open Match Review
@@ -126,6 +131,13 @@ def main():
     # that doesn't match the current parse. Cheap insurance, no downside.
     run([sys.executable, str(PROJECT_ROOT / "scripts" / "ensure_governed_schemas.py")])
     run([sys.executable, str(PROJECT_ROOT / "scripts" / "ensure_domain_metadata.py")])
+    # One-time, idempotent (safe every run): migrates bus_rules.column_rules /
+    # matching_rules / matching_thresholds / survivorship_rules to
+    # domain_key-scoped shape. Must run before dbt seed/run -- the generic
+    # silver/gold models (macros/validation_block.sql, generate_matches.py)
+    # read these tables assuming domain_key already exists.
+    run([sys.executable, str(PROJECT_ROOT / "scripts" / "migrate_column_rules_to_domain.py")])
+    run([sys.executable, str(PROJECT_ROOT / "scripts" / "migrate_matching_rules_to_domain.py")])
     run(["dbt", "--no-partial-parse", "seed"], cwd=DBT_PROJECT_DIR, env=env)
 
     silver_cmd = ["dbt", "--no-partial-parse", "run", "--exclude", "gold.*"]

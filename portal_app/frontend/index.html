@@ -274,6 +274,38 @@
   .lineage-edge-label { fill: var(--text-dim); font-family: var(--mono); font-size: 8px; pointer-events: none; transition: opacity 0.15s ease; }
   .lineage-edge-label.dim { opacity: 0.12; }
 
+  /* ---------- Home: domain relationship diagram ----------
+     Reuses the Lineage tab's SVG pan/zoom mechanics (own transform state,
+     own canvas wrap) but with its own node/edge visual language: domain
+     nodes are rounded rectangles color-coded by access/pipeline status,
+     relationship-link nodes are a visually distinct diamond so they read as
+     "the connection" rather than "another domain". */
+  #homeCanvasWrap {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    height: 460px; overflow: hidden; position: relative; cursor: grab;
+  }
+  #homeCanvasWrap.grabbing { cursor: grabbing; }
+  #homeCanvasWrap svg { display: block; }
+  .home-node-box { cursor: pointer; }
+  .home-node-box rect { stroke-width: 2; transition: opacity 0.12s ease, filter 0.12s ease; }
+  .home-node-box.live-access rect { fill: var(--blue-dim); stroke: var(--blue); }
+  .home-node-box.live-access text.home-node-title { fill: var(--text); }
+  .home-node-box.planned rect { fill: var(--panel-raised); stroke: var(--amber); stroke-dasharray: 4 3; }
+  .home-node-box.planned text.home-node-title { fill: var(--text); }
+  .home-node-box.locked rect { fill: var(--panel-raised); stroke: var(--border); opacity: 0.55; }
+  .home-node-box.locked text.home-node-title { fill: var(--text-dim); }
+  .home-node-box:hover rect { filter: brightness(1.15); }
+  .home-node-box text.home-node-title { font-family: var(--sans); font-size: 13px; font-weight: 700; pointer-events: none; }
+  .home-node-box text.home-node-sub { fill: var(--text-dim); font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em; pointer-events: none; }
+  .home-link-node { cursor: pointer; }
+  .home-link-node polygon { fill: var(--amber-dim); stroke: var(--amber); stroke-width: 1.5; }
+  .home-link-node:hover polygon { filter: brightness(1.2); }
+  .home-link-node text { fill: var(--amber); font-family: var(--mono); font-size: 9px; text-anchor: middle; pointer-events: none; }
+  .home-edge-line { stroke: var(--border); stroke-width: 1.4; fill: none; }
+  .home-lock-icon { fill: var(--text-dim); font-family: var(--mono); font-size: 11px; pointer-events: none; }
+  .home-intro { color: var(--text-dim); font-size: 13px; margin-bottom: 16px; max-width: 640px; }
+  .home-legend { display: flex; align-items: center; gap: 20px; margin-bottom: 14px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
+
   /* ---------- Dashboard ---------- */
   .dash-pane { width: 100%; }
   .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 48px; }
@@ -476,8 +508,9 @@
     <div class="brand">
       <h1>MDM Data Hub Portal</h1>
       <nav>
-        <button id="navDashboard" class="view-tab active" onclick="showView('dashboard')">Dashboard</button>
-        <button id="navBrowse" class="view-tab" onclick="showView('browse')">Browse Customers</button>
+        <button id="navHome" class="view-tab active" onclick="showView('home')">Home</button>
+        <button id="navDashboard" class="view-tab" onclick="showView('dashboard')">Dashboard</button>
+        <button id="navBrowse" class="view-tab" onclick="showView('browse')">Browse Records</button>
         <button id="navApprovals" class="view-tab" onclick="showView('approvals')">Approvals</button>
         <span class="dropdown" id="govDropdown">
           <button id="navGovTrigger" class="view-tab" onclick="toggleDropdown('govDropdown')">Data Governance ▾</button>
@@ -504,15 +537,32 @@
   </header>
 
   <main>
-    <!-- Dashboard -->
-    <div class="view active" id="view-dashboard">
-      <div class="dash-pane" id="dashPaneCustomers"><div class="dash-empty">Loading customer dashboard…</div></div>
+    <!-- Home: domain relationship diagram (post-login landing view) -->
+    <div class="view active" id="view-home">
+      <div class="home-intro">
+        Every domain this platform knows about, and how they relate. Domains you have access to and that have a
+        live pipeline open when clicked; others show why they're not reachable yet.
+      </div>
+      <div class="home-legend">
+        <span><i class="legend-dot" style="background:var(--blue);"></i> Open (you have access)</span>
+        <span><i class="legend-dot" style="background:var(--amber);"></i> Planned (no pipeline yet)</span>
+        <span><i class="legend-dot" style="background:var(--text-dim);"></i> No access</span>
+        <span class="legend-hint" style="margin-left:auto;">Drag to pan, scroll to zoom.</span>
+      </div>
+      <div id="homeCanvasWrap">
+        <div class="empty-state" id="homeLoadingState" style="padding-top:80px;">Loading domains…</div>
+      </div>
     </div>
 
-    <!-- Browse Customers -->
+    <!-- Dashboard -->
+    <div class="view" id="view-dashboard">
+      <div class="dash-pane" id="dashPaneCustomers"><div class="dash-empty">Loading dashboard…</div></div>
+    </div>
+
+    <!-- Browse Records -->
     <div class="view" id="view-browse">
       <div class="toolbar">
-        <input type="text" id="searchBox" placeholder="Search name, email, or golden ID…" oninput="debouncedSearch()">
+        <input type="text" id="searchBox" placeholder="Search…" oninput="debouncedSearch()">
         <div style="margin-left:auto; display:flex; align-items:center; gap:14px;">
           <span class="filter-banner" id="filterBanner" style="display:none;">
             <span class="filter-banner-text" id="filterBannerText"></span>
@@ -522,11 +572,7 @@
         </div>
       </div>
       <table>
-        <thead>
-          <tr>
-            <th>GOLDEN ID</th><th>NAME</th><th>EMAIL</th><th>PHONE</th><th>STATE</th><th>SOURCES</th>
-          </tr>
-        </thead>
+        <thead id="recordsTableHead"></thead>
         <tbody id="customerRows"></tbody>
       </table>
       <div class="pagination" id="browsePagination"></div>
@@ -673,12 +719,16 @@
     <div class="modal-field"><label>ROLE</label>
       <select id="uf_role"><option value="admin">Admin</option><option value="dataSteward">Data Steward</option><option value="dataOwner">Data Owner</option><option value="businessUser">Business User</option></select>
     </div>
-    <div class="modal-field"><label>GOLD LAYER ACCESS</label>
+    <div class="modal-field"><label>GOLD LAYER ACCESS (legacy fallback)</label>
       <select id="uf_gold_access"><option value="none">none</option><option value="read">read</option><option value="read_write">read_write</option></select>
     </div>
     <div class="modal-field" id="uf_active_field" style="display:none;">
       <label>STATUS</label>
       <select id="uf_is_active"><option value="true">active</option><option value="false">deactivated</option></select>
+    </div>
+    <div class="modal-field">
+      <label>PER-DOMAIN ACCESS</label>
+      <div id="uf_domain_access_fields" class="modal-grid"></div>
     </div>
     <div class="password-reveal" id="passwordReveal" style="display:none;"></div>
     <div class="modal-actions">
@@ -738,6 +788,21 @@ let approvalsMode = 'pending';   // 'pending' (awaiting my decision) | 'mine' (m
 let currentApprovalItem = null;
 let currentApprovalRecordData = null;   // "current state" fetched for the embedded Approvals record form
 let approvalsCategoryFilter = '';    // '' (all categories) or a workflow_type key
+
+// Phase 5 (domain-agnostic frontend): every domain this user can see (from
+// GET /api/v1/domains, each row carrying this user's own access_level/
+// has_access) and the domain-to-domain relationships for the Home diagram.
+// currentDomain is whichever domain the user last "entered" from Home --
+// Dashboard/Browse/the record modal are all scoped to it. Nothing here is a
+// literal domain name; a second live domain needs zero changes to this file.
+let domainsList = [];
+let domainRelationships = [];
+let currentDomain = null;
+// domain_key -> array of {attribute_key, display_label, data_type, is_required,
+// is_matching_field, is_similarity_text_field, sort_order}, fetched once per
+// domain and reused by the Browse table, the record modal, and the audit
+// trail header -- see getDomainAttributes().
+const domainAttrsCache = {};
 
 // Set only when the user arrives at Browse Customers by clicking a dashboard
 // element. { params: {...query params...}, label: string } -- always shows
@@ -846,7 +911,7 @@ function clearSession() {
   localStorage.removeItem(SESSION_KEY);
 }
 
-function enterApp() {
+async function enterApp() {
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('appShell').style.display = 'block';
   document.getElementById('userFullName').textContent = session.user.full_name;
@@ -869,7 +934,13 @@ function enterApp() {
   document.getElementById('navLineage').style.display = canGold ? 'block' : 'none';
   document.getElementById('govDropdown').style.display = 'inline-block';
 
-  showView('dashboard');
+  // Phase 5: Home (the domain relationship diagram) is the landing view,
+  // replacing the old hardcoded-to-Customer Dashboard landing. Domains/
+  // relationships are fetched once per login, not per Home visit -- they
+  // change rarely (metadata), and every domain-scoped screen wants
+  // domainsList already populated before it can gate on has_access.
+  await loadDomainsAndRelationships();
+  showView('home');
 }
 
 // On load, if another tab/app (e.g. the Data Stewardship console) already
@@ -882,7 +953,7 @@ async function tryRestoreSession() {
     const res = await fetch(`${API}/auth/me`, { headers: { 'Authorization': `Bearer ${stored.token}` } });
     if (res.ok) {
       session = stored;
-      enterApp();
+      await enterApp();
     } else {
       clearSession();
     }
@@ -908,7 +979,7 @@ async function doLogin() {
     return;
   }
   saveSession(await res.json());
-  enterApp();
+  await enterApp();
 }
 
 async function doLogout() {
@@ -923,8 +994,15 @@ async function doLogout() {
 tryRestoreSession();
 
 function showView(name, keepDashboardFilter) {
+  // Dashboard and Browse are scoped to currentDomain -- with none entered
+  // yet (fresh login, or a page reload that restored the session but not
+  // in-memory navigation state), there's nothing to show, so redirect to
+  // Home rather than rendering an empty/broken screen.
+  if ((name === 'dashboard' || name === 'browse') && !currentDomain) name = 'home';
+
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(`view-${name}`).classList.add('active');
+  document.getElementById('navHome').classList.toggle('active', name === 'home');
   document.getElementById('navDashboard').classList.toggle('active', name === 'dashboard');
   document.getElementById('navBrowse').classList.toggle('active', name === 'browse');
   document.getElementById('navLineage').classList.toggle('active', name === 'lineage');
@@ -935,10 +1013,11 @@ function showView(name, keepDashboardFilter) {
   document.getElementById('govDropdown').classList.remove('open');
 
   // Clicking a nav item directly (not arriving via a dashboard drill-through)
-  // always resets to the plain, unfiltered Browse Customers view.
+  // always resets to the plain, unfiltered Browse Records view.
   if (!keepDashboardFilter) dashboardFilter = null;
 
-  if (name === 'dashboard') { dashboardFilter = null; loadCustomersDashboard(); return; }
+  if (name === 'home') { renderHomeGraph(); return; }
+  if (name === 'dashboard') { dashboardFilter = null; loadRecordsDashboard(); return; }
   if (name === 'browse') {
     pagerResetPage('portal_browse');
     currentSearch = '';
@@ -991,21 +1070,34 @@ function clickConfidenceTier(tier) {
 function clickSurvivorSource(src) {
   goToFilteredCustomers({ survivor_source_system: src }, `Source: ${src}`);
 }
-function clickState(stateCode) {
-  goToFilteredCustomers({ state_code: stateCode }, `State: ${stateCode}`);
-}
-function clickCountry(countryCode) {
-  goToFilteredCustomers({ country_code: countryCode }, `Country: ${countryCode}`);
+// Phase 5 (domain-agnostic): replaces the old clickState()/clickCountry(),
+// which hardcoded two Customer attribute keys as query params. Drill-through
+// for ANY dashboard breakdown bar (whichever attributes this domain flagged
+// is_dashboard_breakdown) goes through this one generic handler instead,
+// using GET /api/v1/records/{domain_key}'s attr_key/attr_value exact-match
+// filter.
+function clickBreakdownValue(attrKey, label, value) {
+  goToFilteredCustomers({ attr_key: attrKey, attr_value: value }, `${label}: ${value}`);
 }
 function clickPendingApproval(isPending) {
   goToFilteredCustomers({ pending_approval: isPending }, isPending ? 'Pending Approval' : 'Not Pending Approval');
 }
 
-// ---------------- Dashboard (single pane: gold-layer customer data) ----------------
+// ---------------- Dashboard (single pane: current domain's gold-layer data) ----------------
 
 const TIER_COLORS = { provisional: '#8b93a3', tier1: '#5bc98a', tier2: '#5b9ce8' };
 const TIER_LABELS = { provisional: 'Provisional', tier1: 'Tier 1: Exact Match', tier2: 'Tier 2: Fuzzy Match' };
-const SOURCE_COLORS = { CRM: '#5b9ce8', ERP: '#e8a54b' };
+// Phase 5 (domain-agnostic): source systems are metadata (governance.
+// domain_source_systems), not a fixed two-entry map -- colors are assigned
+// deterministically from a small palette by name instead of a hardcoded
+// {CRM, ERP} lookup, so a domain with different (or more than two) source
+// systems still gets a stable, distinct color per system with no code change.
+const SOURCE_COLOR_PALETTE = ['#5b9ce8', '#e8a54b', '#5bc98a', '#c77dd2', '#e05a5a', '#4bc0c8'];
+function colorForSourceSystem(name) {
+  let hash = 0;
+  for (let i = 0; i < String(name).length; i++) hash = (hash * 31 + String(name).charCodeAt(i)) >>> 0;
+  return SOURCE_COLOR_PALETTE[hash % SOURCE_COLOR_PALETTE.length];
+}
 
 function jsStr(s) {
   return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
@@ -1092,9 +1184,10 @@ function svgTrendChart(series, keys, colors, width, height) {
 }
 
 function renderCustomersDash(d) {
-  if (!d) return '<div class="dash-empty">Could not load customer dashboard.</div>';
+  if (!d) return '<div class="dash-empty">Could not load dashboard.</div>';
+  const domain = currentDomain || {};
 
-  const topKpis = [{ label: 'Total Customers', value: d.total }];
+  const topKpis = [{ label: `Total ${domain.entity_label_plural || 'Records'}`, value: d.total }];
 
   const sourceCountItems = d.by_source_count.map(s => ({
     label: `${s.source_system_count} source${s.source_system_count > 1 ? 's' : ''}`,
@@ -1117,7 +1210,7 @@ function renderCustomersDash(d) {
   }));
 
   const survivorPie = d.by_survivor_source.map(s => ({
-    count: s.count, color: SOURCE_COLORS[s.source_system] || '#8b93a3',
+    count: s.count, color: colorForSourceSystem(s.source_system),
     onClick: `clickSurvivorSource(${jsStr(s.source_system)})`,
   }));
   const survivorLegend = d.by_survivor_source.map((s, i) => `
@@ -1125,22 +1218,34 @@ function renderCustomersDash(d) {
       <i style="background:${survivorPie[i].color}"></i>${s.source_system} (${s.count})
     </span>`).join('');
 
-  const stateBars = d.by_state.map(s => ({
-    label: s.label, count: s.count,
-    onClick: s.label === 'Other' ? null : `clickState(${jsStr(s.label)})`,
-  }));
-  const countryBars = d.by_country.map(c => ({
-    label: c.label, count: c.count,
-    onClick: c.label === 'Other' ? null : `clickCountry(${jsStr(c.label)})`,
-  }));
+  // Phase 5 (domain-agnostic): d.breakdowns is a dict of attribute_key ->
+  // {label, values:[{label,count}]}, one entry per governance.domain_attributes
+  // row this domain flagged is_dashboard_breakdown -- replaces the old
+  // hardcoded d.by_state/d.by_country. Renders zero, one, or many sections,
+  // whatever the domain defines; "Other" (the top-N-plus-rest bucket) isn't
+  // a single filterable value, so it's shown but not clickable, same as before.
+  const breakdownSections = Object.entries(d.breakdowns || {}).map(([attrKey, b]) => {
+    const bars = b.values.map(v => ({
+      label: v.label, count: v.count,
+      onClick: v.label === 'Other' ? null : `clickBreakdownValue(${jsStr(attrKey)}, ${jsStr(b.label)}, ${jsStr(v.label)})`,
+    }));
+    return `
+      <div class="dash-section-label">By ${escapeDashText(b.label)}</div>
+      ${barList(bars, 'var(--blue)')}
+    `;
+  });
 
   const pendingKpis = [
     { label: 'Pending Approval', value: d.pending_approval.pending, color: 'var(--red)', onClick: 'clickPendingApproval(true)' },
     { label: 'Not Pending', value: d.pending_approval.not_pending, color: 'var(--green)', onClick: 'clickPendingApproval(false)' },
   ];
 
+  // Split the domain's breakdown sections between the two columns, left-heavy.
+  const leftBreakdowns = breakdownSections.filter((_, i) => i % 2 === 0).join('');
+  const rightBreakdowns = breakdownSections.filter((_, i) => i % 2 === 1).join('');
+
   return `
-    <h3 class="dash-pane-title">Customers</h3>
+    <h3 class="dash-pane-title">${escapeDashText(domain.entity_label_plural || domain.display_name || 'Records')}</h3>
     ${kpiRow(topKpis)}
 
     <div class="dash-grid">
@@ -1155,8 +1260,7 @@ function renderCustomersDash(d) {
         <div class="dash-section-label">Match confidence tier</div>
         ${kpiRow(tierItems)}
 
-        <div class="dash-section-label">By state</div>
-        ${barList(stateBars, 'var(--blue)')}
+        ${leftBreakdowns}
       </div>
 
       <div class="dash-col-right">
@@ -1169,8 +1273,7 @@ function renderCustomersDash(d) {
         <div class="dash-section-label">Approval status</div>
         ${kpiRow(pendingKpis)}
 
-        <div class="dash-section-label">By country</div>
-        ${barList(countryBars, 'var(--blue)')}
+        ${rightBreakdowns}
       </div>
 
       <div class="dash-full">
@@ -1186,9 +1289,10 @@ function renderCustomersDash(d) {
   `;
 }
 
-async function loadCustomersDashboard() {
-  document.getElementById('dashPaneCustomers').innerHTML = '<div class="dash-empty">Loading customer dashboard…</div>';
-  const res = await fetch(`${API}/portal/dashboard/customers-summary`, { headers: authHeaders() });
+async function loadRecordsDashboard() {
+  if (!currentDomain) { showView('home'); return; }
+  document.getElementById('dashPaneCustomers').innerHTML = '<div class="dash-empty">Loading dashboard…</div>';
+  const res = await fetch(`${API}/portal/dashboard/${currentDomain.domain_key}/summary`, { headers: authHeaders() });
   const data = res.ok ? await res.json() : null;
   document.getElementById('dashPaneCustomers').innerHTML = renderCustomersDash(data);
 }
@@ -1233,45 +1337,100 @@ function debouncedSearch() {
   }, 300);
 }
 
+// Phase 5 (domain-agnostic): fetches (and caches) governance.domain_attributes
+// for one domain -- ordered by sort_order. Every screen that used to read a
+// hardcoded field-list constant (CUST_FIELDS, FIELD_LABELS, etc.) now reads
+// this instead, so a new domain or a new/renamed attribute needs no frontend
+// change.
+async function getDomainAttributes(domainKey) {
+  if (domainAttrsCache[domainKey]) return domainAttrsCache[domainKey];
+  const res = await fetch(`${API}/domains/${domainKey}/attributes`, { headers: authHeaders() });
+  const data = res.ok ? await res.json() : { attributes: [] };
+  domainAttrsCache[domainKey] = data.attributes || [];
+  return domainAttrsCache[domainKey];
+}
+
+function parseAttrsJson(raw) {
+  if (raw == null) return {};
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch (e) { return {}; }
+  }
+  return raw;
+}
+function parseAttrs(record) {
+  return record ? parseAttrsJson(record.attributes) : {};
+}
+
+// Best-effort human-readable label for a record: joins the values of
+// whichever attributes this domain flagged is_similarity_text_field (the
+// same flag matching/blocking already uses to mean "name-like free text"),
+// in their defined order. Falls back to just the golden_id when a domain
+// hasn't flagged any such attribute.
+function recordDisplayLabel(attrs, domainKey) {
+  const fields = (domainAttrsCache[domainKey] || []).filter(a => a.is_similarity_text_field);
+  const parts = fields.map(f => attrs[f.attribute_key]).filter(Boolean);
+  return parts.join(' ');
+}
+
+// The Browse table shows GOLDEN ID, the domain's first few attributes (by
+// sort_order -- i.e. however the domain itself orders its fields) plus
+// SOURCES, instead of a hardcoded NAME/EMAIL/PHONE/STATE column set.
+const BROWSE_COLUMN_COUNT = 5;
+
+function renderBrowseTableHead(attrs) {
+  const cols = attrs.slice(0, BROWSE_COLUMN_COUNT);
+  document.getElementById('recordsTableHead').innerHTML = `
+    <tr><th>GOLDEN ID</th>${cols.map(a => `<th>${escapeXml(a.display_label.toUpperCase())}</th>`).join('')}<th>SOURCES</th></tr>
+  `;
+  return cols;
+}
+
 async function loadCustomers() {
+  if (!currentDomain) { showView('home'); return; }
+  const domainKey = currentDomain.domain_key;
+  const attrs = await getDomainAttributes(domainKey);
+  const cols = renderBrowseTableHead(attrs);
+
   pagerState('portal_browse', loadCustomers);
   const data = await pagedFetch('portal_browse', params => {
     if (currentSearch) params.set('q', currentSearch);
     if (dashboardFilter) {
       Object.entries(dashboardFilter.params).forEach(([k, v]) => params.set(k, v));
     }
-    return `${API}/customers?${params}`;
+    return `${API}/records/${domainKey}?${params}`;
   });
   if (!data) return;
-  document.getElementById('resultCount').textContent = `${data.total} customer(s)`;
-  document.getElementById('customerRows').innerHTML = data.customers.map(c => `
-    <tr class="row" onclick="openCustomer('${c.golden_id}')">
-      <td style="font-family:var(--mono);color:var(--text-dim);">${c.golden_id}</td>
-      <td>${c.first_name || ''} ${c.last_name || ''}</td>
-      <td style="font-family:var(--mono);font-size:12px;">${c.email || ''}</td>
-      <td style="font-family:var(--mono);font-size:12px;">${c.phone || ''}</td>
-      <td>${c.state_code || ''}</td>
+  document.getElementById('resultCount').textContent = `${data.total} ${(currentDomain.entity_label_plural || 'record').toLowerCase()}(s)`;
+  document.getElementById('customerRows').innerHTML = data.records.map(r => {
+    const a = parseAttrs(r);
+    return `
+    <tr class="row" onclick="openCustomer('${r.golden_id}')">
+      <td style="font-family:var(--mono);color:var(--text-dim);">${r.golden_id}</td>
+      ${cols.map(c => `<td style="font-family:var(--mono);font-size:12px;">${escapeXml(a[c.attribute_key] ?? '')}</td>`).join('')}
       <td>
-        <span class="badge ${c.source_system_count > 1 ? 'multi' : 'single'}">${c.source_system_count} source${c.source_system_count > 1 ? 's' : ''}</span>
-        ${c.pending_match_review ? '<span class="badge review" title="A data steward is confirming whether this record represents the same customer as another golden record.">Under review</span>' : ''}
+        <span class="badge ${r.source_system_count > 1 ? 'multi' : 'single'}">${r.source_system_count} source${r.source_system_count > 1 ? 's' : ''}</span>
+        ${r.pending_match_review ? '<span class="badge review" title="A data steward is confirming whether this record represents the same entity as another golden record.">Under review</span>' : ''}
       </td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
   document.getElementById('browsePagination').innerHTML = pagerHtml('portal_browse', data.total);
 }
 
-const CUST_FIELDS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'], ['phone', 'Phone'],
-  ['address_line1', 'Address'], ['city', 'City'], ['state_code', 'State'],
-  ['postal_code', 'Postal code'], ['country_code', 'Country'],
-];
-
 async function openCustomer(goldenId) {
-  const res = await fetch(`${API}/customers/${goldenId}`, { headers: authHeaders() });
+  const domainKey = currentDomain.domain_key;
+  const res = await fetch(`${API}/records/${domainKey}/${goldenId}`, { headers: authHeaders() });
   const cust = await res.json();
   editingCustomer = cust;
-  document.getElementById('custModalTitle').textContent = `${cust.first_name || ''} ${cust.last_name || ''} — ${cust.golden_id}`;
-  const canWrite = session.user.gold_access === 'read_write' && !cust.pending_match_review && !cust.pending_approval;
+  const attrs = await getDomainAttributes(domainKey);
+  const custAttrs = parseAttrs(cust);
+  const label = recordDisplayLabel(custAttrs, domainKey);
+  document.getElementById('custModalTitle').textContent = `${label ? label + ' — ' : ''}${cust.golden_id}`;
+  const canWrite = currentDomain.access_level === 'read_write' && !cust.pending_match_review && !cust.pending_approval;
+  // Every active attribute is editable except date-typed ones (source
+  // provenance timestamps, not golden-record content a user corrects) --
+  // a generic, metadata-driven exclusion instead of a hand-curated field list.
+  const editableAttrs = attrs.filter(a => a.data_type !== 'date');
   document.getElementById('custFields').innerHTML = `
     ${cust.pending_approval ? `
       <div class="readonly-badge" style="grid-column: 1 / -1;">
@@ -1283,15 +1442,16 @@ async function openCustomer(goldenId) {
         Under data steward review — editing is paused until this is resolved.
       </div>
     ` : ''}
-    ${CUST_FIELDS.map(([key, label]) => `
+    ${editableAttrs.map(a => `
     <div class="modal-field">
-      <label>${label}</label>
-      <input type="text" id="cf_${key}" value="${cust[key] ?? ''}" ${canWrite ? '' : 'disabled'}>
+      <label>${escapeXml(a.display_label)}</label>
+      <input type="text" id="cf_${a.attribute_key}" value="${escapeXml(custAttrs[a.attribute_key] ?? '')}" ${canWrite ? '' : 'disabled'}>
     </div>
   `).join('')}`;
   document.getElementById('saveCustBtn').style.display = canWrite ? 'inline-block' : 'none';
+  document.getElementById('saveCustBtn').dataset.editableAttrs = editableAttrs.map(a => a.attribute_key).join(',');
 
-  const srcRes = await fetch(`${API}/customers/${goldenId}/sources`, { headers: authHeaders() });
+  const srcRes = await fetch(`${API}/records/${domainKey}/${goldenId}/sources`, { headers: authHeaders() });
   const srcData = await srcRes.json();
   document.getElementById('crosswalkList').innerHTML = srcData.sources.map(s => {
     const wonCols = s.winning_columns || [];
@@ -1308,10 +1468,12 @@ async function openCustomer(goldenId) {
 }
 
 async function saveCustomer() {
-  const body = {};
-  CUST_FIELDS.forEach(([key]) => { body[key] = document.getElementById(`cf_${key}`).value; });
-  const res = await fetch(`${API}/customers/${editingCustomer.golden_id}`, {
-    method: 'PUT', headers: authHeaders(), body: JSON.stringify(body),
+  const domainKey = currentDomain.domain_key;
+  const editableKeys = (document.getElementById('saveCustBtn').dataset.editableAttrs || '').split(',').filter(Boolean);
+  const updates = {};
+  editableKeys.forEach(key => { updates[key] = document.getElementById(`cf_${key}`).value; });
+  const res = await fetch(`${API}/records/${domainKey}/${editingCustomer.golden_id}`, {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify({ updates }),
   });
   if (res.ok) {
     const data = await res.json();
@@ -1358,9 +1520,10 @@ async function openAuditTrail(goldenId) {
 
 async function loadAuditTrailPage() {
   const goldenId = currentAuditGoldenId;
+  const domainKey = currentDomain.domain_key;
   const pagerKey = 'portal_audit_' + goldenId;
   pagerState(pagerKey, loadAuditTrailPage);
-  const data = await pagedFetch(pagerKey, params => `${API}/customers/${goldenId}/audit-trail?${params}`);
+  const data = await pagedFetch(pagerKey, params => `${API}/records/${domainKey}/${goldenId}/audit-trail?${params}`);
   if (!data) {
     document.getElementById('atHeaderTitle').textContent = goldenId;
     document.getElementById('atBody').innerHTML = '<div class="empty-state">No audit history found for this record.</div>';
@@ -1373,12 +1536,11 @@ async function loadAuditTrailPage() {
 
 function renderAuditHeader(data) {
   const c = data.current || {};
-  const name = `${c.first_name || ''} ${c.last_name || ''}`.trim();
-  document.getElementById('atHeaderTitle').textContent = name || '(name unavailable)';
+  const attrs = parseAttrs(c);
+  const name = recordDisplayLabel(attrs, data.domain_key);
+  document.getElementById('atHeaderTitle').textContent = name || data.golden_id;
   document.getElementById('atHeaderMeta').innerHTML = `
     <span>${escapeXml(data.golden_id)}</span>
-    ${c.email ? `<span>${escapeXml(c.email)}</span>` : ''}
-    ${c.phone ? `<span>${escapeXml(c.phone)}</span>` : ''}
     ${!data.is_active ? '<span class="at-inactive-badge">LOGICALLY DELETED — not in current gold layer</span>' : ''}
   `;
 }
@@ -1434,7 +1596,34 @@ async function loadUsers() {
   document.getElementById('usersPagination').innerHTML = pagerHtml('portal_users', data.total);
 }
 
-function openUserForm(user) {
+// Phase 4/5: per-domain access grants (governance.user_domain_access),
+// replacing the single global gold_access dropdown as the real access
+// control -- gold_access above is kept only as the documented legacy
+// fallback. Rendered from domainsList (already loaded at login), one
+// none/read/read_write select per active domain, so a new domain needs no
+// frontend change to show up here.
+let editingUserDomainAccess = {};   // domain_key -> current level, snapshotted when the modal opens
+
+function renderDomainAccessFields(currentMap) {
+  document.getElementById('uf_domain_access_fields').innerHTML = domainsList.map(d => `
+    <div class="modal-field">
+      <label>${escapeXml(d.display_name)}</label>
+      <select id="uf_domain_${d.domain_key}">
+        <option value="none" ${(!currentMap[d.domain_key] || currentMap[d.domain_key] === 'none') ? 'selected' : ''}>none</option>
+        <option value="read" ${currentMap[d.domain_key] === 'read' ? 'selected' : ''}>read</option>
+        <option value="read_write" ${currentMap[d.domain_key] === 'read_write' ? 'selected' : ''}>read_write</option>
+      </select>
+    </div>
+  `).join('');
+}
+
+function collectDomainAccessFields() {
+  const out = {};
+  domainsList.forEach(d => { out[d.domain_key] = document.getElementById(`uf_domain_${d.domain_key}`).value; });
+  return out;
+}
+
+async function openUserForm(user) {
   editingUserId = user ? user.user_id : null;
   document.getElementById('userModalTitle').textContent = user ? `Edit ${user.username}` : 'New user';
   document.getElementById('uf_username').value = user ? user.username : '';
@@ -1446,6 +1635,16 @@ function openUserForm(user) {
   document.getElementById('uf_is_active').value = user ? String(user.is_active) : 'true';
   document.getElementById('resetPwBtn').style.display = user ? 'inline-block' : 'none';
   document.getElementById('passwordReveal').style.display = 'none';
+
+  editingUserDomainAccess = {};
+  if (user) {
+    const res = await fetch(`${API}/admin/users/${user.user_id}/domain-access`, { headers: authHeaders() });
+    if (res.ok) {
+      const data = await res.json();
+      (data.domain_access || []).forEach(d => { editingUserDomainAccess[d.domain_key] = d.gold_access; });
+    }
+  }
+  renderDomainAccessFields(editingUserDomainAccess);
   document.getElementById('userModal').classList.add('open');
 }
 
@@ -1459,24 +1658,45 @@ async function saveUser() {
     };
     const res = await fetch(`${API}/admin/users/${editingUserId}`, { method: 'PUT', headers: authHeaders(), body: JSON.stringify(body) });
     const data = await res.json();
+    let messages = [];
     if (res.ok) {
       if (data.status === 'pending_approval') {
         const steps = (data.steps || []).map(s => s.step_name).join(' → ');
-        showToast(`Submitted for approval${steps ? ' (' + steps + ')' : ''} — a different Admin must sign off.`);
+        messages.push(`Role/status change submitted for approval${steps ? ' (' + steps + ')' : ''}.`);
       } else {
-        showToast('User updated.');
+        messages.push('User updated.');
       }
-      loadUsers();
-      closeModal('userModal');
     } else {
-      showToast(data.detail || 'Update failed.');
+      messages.push(data.detail || 'Update failed.');
     }
+
+    // Only submit a second (domain_access_update) workflow instance if the
+    // grid actually changed from what was loaded -- avoids a no-op
+    // maker-checker submission every time the modal is just re-saved.
+    const newDomainAccess = collectDomainAccessFields();
+    const changed = domainsList.some(d => (editingUserDomainAccess[d.domain_key] || 'none') !== newDomainAccess[d.domain_key]);
+    if (changed) {
+      const daRes = await fetch(`${API}/admin/users/${editingUserId}/domain-access`, {
+        method: 'PUT', headers: authHeaders(), body: JSON.stringify({ domain_access: newDomainAccess }),
+      });
+      const daData = await daRes.json();
+      if (daRes.ok && daData.status === 'pending_approval') {
+        const steps = (daData.steps || []).map(s => s.step_name).join(' → ');
+        messages.push(`Domain access change submitted for approval${steps ? ' (' + steps + ')' : ''}.`);
+      } else if (!daRes.ok) {
+        messages.push(daData.detail || 'Domain access update failed.');
+      }
+    }
+    showToast(messages.join(' ') + ' A different Admin must sign off on each.');
+    loadUsers();
+    closeModal('userModal');
   } else {
     const body = {
       username: document.getElementById('uf_username').value.trim(),
       full_name: document.getElementById('uf_full_name').value,
       role: document.getElementById('uf_role').value,
       gold_access: document.getElementById('uf_gold_access').value,
+      domain_access: collectDomainAccessFields(),
     };
     const res = await fetch(`${API}/admin/users`, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
     const data = await res.json();
@@ -1764,11 +1984,29 @@ const WORKFLOW_TYPE_LABELS = {
 // options AND to scope the queue itself -- otherwise "All categories" would
 // leak in stewardship-originated approval items. See loadApprovals below.
 const PORTAL_WORKFLOW_TYPES = ['gold_record_edit', 'user_admin_change', 'reference_data_change', 'rules_config_change'];
+// match_review_confirmation's 2-step definition (governance.workflow_definitions)
+// requires a Data Owner at step 1, then an 'admin' at step 2 -- but
+// stewardship_app (where this workflow type is normally shown) is role-gated
+// to dataSteward/dataOwner only (see its ALLOWED_ROLES), so an admin has no
+// screen there to ever reach that pending step-2 decision. This portal is
+// the only app an admin can log into, so it extends visibility to admins
+// specifically for this one type -- Data Owners still see it only in
+// stewardship_app, avoiding the "leak" the comment above otherwise guards
+// against for every other role.
+function visiblePortalWorkflowTypes() {
+  if (session && session.user && session.user.role === 'admin') {
+    return [...PORTAL_WORKFLOW_TYPES, 'match_review_confirmation'];
+  }
+  return PORTAL_WORKFLOW_TYPES;
+}
 // Category filter options for the Approvals queue, alphabetical by label to
-// match the default category-then-ID sort order.
-const APPROVAL_CATEGORIES = Object.entries(WORKFLOW_TYPE_LABELS)
-  .filter(([type]) => PORTAL_WORKFLOW_TYPES.includes(type))
-  .sort((a, b) => a[1].localeCompare(b[1]));
+// match the default category-then-ID sort order. Computed per-call (not a
+// module-level const) since it depends on the logged-in user's role.
+function approvalCategories() {
+  return Object.entries(WORKFLOW_TYPE_LABELS)
+    .filter(([type]) => visiblePortalWorkflowTypes().includes(type))
+    .sort((a, b) => a[1].localeCompare(b[1]));
+}
 
 function summarizeApproval(inst) {
   const p = inst.payload || {};
@@ -1820,21 +2058,17 @@ function formatStatusLabel(status) {
 // diff-highlight behavior) since a Data Owner can review the same
 // exception-remediation / match-review instances from either app. -------
 
-const FIELD_LABELS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
-  ['phone', 'Phone'], ['address_line1', 'Address'], ['city', 'City'],
-  ['state_code', 'State'], ['postal_code', 'Postal code'], ['country_code', 'Country'],
-];
-const COMPARE_FIELD_LABELS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
-  ['phone', 'Phone'], ['address_line1', 'Address'], ['city', 'City'],
-  ['state_code', 'State'], ['postal_code', 'Postal code'],
-];
-const GOLD_FIELD_LABELS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
-  ['phone', 'Phone'], ['address_line1', 'Address line 1'], ['address_line2', 'Address line 2'],
-  ['city', 'City'], ['state_code', 'State'], ['postal_code', 'Postal code'], ['country_code', 'Country'],
-];
+// Phase 5 (domain-agnostic): FIELD_LABELS/COMPARE_FIELD_LABELS/GOLD_FIELD_LABELS
+// used to be hardcoded Customer field lists here. Exceptions, match-review
+// pairs, and gold records all carry their own domain_key, so the Approvals
+// panel now looks up whichever domain that instance's record actually
+// belongs to via attrFieldPairs() -- a steward's remit spans every domain
+// (see api/main.py's Phase 4 comment on the Exception Queue/Match Review
+// staying role-gated, not domain-gated), so this can't be a single
+// currentDomain-based lookup the way Browse/Dashboard's is.
+function attrFieldPairs(domainKey) {
+  return (domainAttrsCache[domainKey] || []).map(a => [a.attribute_key, a.display_label]);
+}
 const USER_FIELD_LABELS = [
   ['username', 'Username'], ['full_name', 'Full name'], ['role', 'Role'],
   ['gold_access', 'Gold access'], ['is_active', 'Status'],
@@ -1849,6 +2083,30 @@ const USER_FIELD_LABELS = [
 function catalogFieldPairs(entityType) {
   const entry = catalogEntry(entityType);
   return entry ? entry.field_schema.map(f => [f.key, f.label]) : [];
+}
+
+// Renders a {domain_key: level} current vs. proposed dict as the same
+// field-diff grid style as entityFieldsFormHtml, for the domain_access_update
+// action_type -- domain_access is a dict, not a flat [key,label] record, so
+// it needs its own small renderer rather than being forced through
+// entityFieldsFormHtml.
+function domainAccessDiffHtml(current, proposed) {
+  const keys = Array.from(new Set([...Object.keys(current || {}), ...Object.keys(proposed || {})]));
+  if (!keys.length) return '<div style="font-size:12px;color:var(--text-dim);">No domain access changes.</div>';
+  return `<div class="field-grid">${keys.map(k => {
+    const domain = domainsList.find(d => d.domain_key === k);
+    const label = domain ? domain.display_name : k;
+    const curVal = (current || {})[k];
+    const newVal = (proposed || {})[k];
+    const changed = newVal !== undefined && newVal !== curVal;
+    const displayVal = changed ? newVal : curVal;
+    return `
+      <div class="field field-readonly${changed ? ' field-diff' : ''}">
+        <label>${escapeXml(label)}</label>
+        <div class="field-readonly-value">${escapeXml(displayVal ?? 'none')}</div>
+        ${changed && curVal !== undefined ? `<div class="field-old-value">was: ${escapeXml(curVal)}</div>` : ''}
+      </div>`;
+  }).join('')}</div>`;
 }
 
 function formatFieldDisplayValue(val) {
@@ -1881,30 +2139,37 @@ function entityFieldsFormHtml(fieldDefs, current, proposed) {
 
 // FAILED VALIDATION reasons + field grid, identical to the Data Stewardship
 // console's own exception detail view (proposedFields = submitted
-// applied_fields, so a resolve's changed fields render highlighted).
+// applied_fields, so a resolve's changed fields render highlighted). item's
+// domain_key drives which attributes render -- caller must have already
+// warmed domainAttrsCache[item.domain_key] (see fetchApprovalRecordData).
 function exceptionRecordFormHtml(item, proposedFields) {
+  const flat = { ...parseAttrs(item), source_system: item.source_system, source_record_id: item.source_record_id };
   return `
     <div class="reasons-box">
       <div class="label">FAILED VALIDATION</div>
       <ul>${(item.reject_reasons || []).map(r => `<li>${escapeXml(r)}</li>`).join('')}</ul>
     </div>
-    ${entityFieldsFormHtml(FIELD_LABELS, item, proposedFields || {})}
+    ${entityFieldsFormHtml(attrFieldPairs(item.domain_key), flat, proposedFields || {})}
   `;
 }
 
 // Similarity banner + side-by-side compare grid, identical to the Data
 // Stewardship console's own match-review detail view. There's no
 // field-level proposal to diff here (confirm/reject doesn't edit fields).
+// item's attributes_a/attributes_b are each a domain-shaped attributes JSON
+// blob (Phase 3's gold_match_review_queue shape), not the old flat
+// `${key}_a`/`${key}_b` columns.
 function matchRecordFormHtml(item) {
-  const rows = COMPARE_FIELD_LABELS.map(([key, label]) => {
-    const valA = item[`${key}_a`] ?? '';
-    const valB = item[`${key}_b`] ?? '';
+  const attrsA = parseAttrsJson(item.attributes_a), attrsB = parseAttrsJson(item.attributes_b);
+  const rows = attrFieldPairs(item.domain_key).map(([key, label]) => {
+    const valA = attrsA[key] ?? '';
+    const valB = attrsB[key] ?? '';
     const diff = String(valA).toLowerCase() !== String(valB).toLowerCase();
     return { key, label, valA, valB, diff };
   });
   return `
     <div class="similarity-banner">
-      <span class="label">EMBEDDING SIMILARITY (name + address, blocked on ${item.blocking_key})</span>
+      <span class="label">EMBEDDING SIMILARITY (blocked on ${escapeXml(item.blocking_key)})</span>
       <span class="score">${item.similarity_score.toFixed(3)}</span>
     </div>
     <div class="compare-grid">
@@ -1944,19 +2209,37 @@ async function fetchApprovalRecordData(inst) {
     await loadGovernedEntityCatalog();
   }
   try {
+    // Phase 5 (domain-agnostic): exceptions/match-review pairs/gold records
+    // all carry their own domain_key -- warm that domain's attribute list
+    // before renderApprovalRecordSection needs it synchronously (see
+    // attrFieldPairs()'s docstring above).
     if (inst.workflow_type === 'stewardship_remediation') {
       const r = await fetch(`${API}/stewardship/queue/${inst.entity_id}`, { headers: authHeaders() });
-      return r.ok ? await r.json() : null;
+      if (!r.ok) return null;
+      const rec = await r.json();
+      if (rec.domain_key) await getDomainAttributes(rec.domain_key);
+      return rec;
     }
     if (inst.workflow_type === 'match_review_confirmation') {
       const r = await fetch(`${API}/stewardship/match-review/${inst.entity_id}`, { headers: authHeaders() });
-      return r.ok ? await r.json() : null;
+      if (!r.ok) return null;
+      const rec = await r.json();
+      if (rec.domain_key) await getDomainAttributes(rec.domain_key);
+      return rec;
     }
     if (inst.workflow_type === 'gold_record_edit') {
+      if (p.domain_key) await getDomainAttributes(p.domain_key);
       return p.old_snapshot || null;   // already embedded in the workflow payload
     }
     if (inst.workflow_type === 'user_admin_change') {
       if (inst.action_type === 'create') return null;   // brand-new user, nothing to diff against
+      if (inst.action_type === 'domain_access_update') {
+        // Phase 4's per-domain access replacement for the legacy single
+        // gold_access column -- fetch this user's current grants so the
+        // Approvals panel can diff them against the submitted domain_access.
+        const r = await fetch(`${API}/admin/users/${inst.entity_id}/domain-access`, { headers: authHeaders() });
+        return r.ok ? await r.json() : null;   // {user_id, domain_access: [{domain_key, display_name, gold_access}]}
+      }
       const r = await fetch(`${API}/admin/users?limit=1000`, { headers: authHeaders() });
       if (!r.ok) return null;
       const data = await r.json();
@@ -2014,16 +2297,29 @@ function renderApprovalRecordSection(inst, rec) {
     `;
   }
   if (inst.workflow_type === 'gold_record_edit') {
+    const flat = parseAttrs(rec);
     return `
       <div class="record-header" style="margin-top:4px;">
         <h2 style="font-size:17px;">Golden Record</h2>
         <span class="source-badge">${inst.entity_id}</span>
       </div>
-      ${entityFieldsFormHtml(GOLD_FIELD_LABELS, rec || {}, p.updates || {})}
+      ${entityFieldsFormHtml(attrFieldPairs(p.domain_key), flat, p.updates || {})}
     `;
   }
   if (inst.workflow_type === 'user_admin_change') {
     const isCreate = inst.action_type === 'create';
+    if (inst.action_type === 'domain_access_update') {
+      // rec (from fetchApprovalRecordData) is {user_id, domain_access: [{domain_key, display_name, gold_access}]}
+      const currentByDomain = {};
+      (rec && rec.domain_access || []).forEach(d => { currentByDomain[d.domain_key] = d.gold_access; });
+      return `
+        <div class="record-header" style="margin-top:4px;">
+          <h2 style="font-size:17px;">Domain Access</h2>
+          <span class="source-badge">${inst.entity_id}</span>
+        </div>
+        ${domainAccessDiffHtml(currentByDomain, p.domain_access || {})}
+      `;
+    }
     return `
       <div class="record-header" style="margin-top:4px;">
         <h2 style="font-size:17px;">${isCreate ? 'New User' : 'User'}</h2>
@@ -2031,6 +2327,10 @@ function renderApprovalRecordSection(inst, rec) {
       </div>
       ${isCreate ? '<div class="new-entity-badge">New user — nothing to compare against</div>' : ''}
       ${entityFieldsFormHtml(USER_FIELD_LABELS, isCreate ? {} : (rec || {}), isCreate ? p : (p.updates || {}))}
+      ${isCreate && p.domain_access && Object.keys(p.domain_access).length ? `
+        <div class="dash-section-label" style="margin-top:0;">Domain access</div>
+        ${domainAccessDiffHtml({}, p.domain_access)}
+      ` : ''}
     `;
   }
   if (inst.workflow_type === 'reference_data_change') {
@@ -2099,7 +2399,7 @@ function setApprovalsCategoryFilter(workflowType) {
 
 function approvalCategoryFilterHtml() {
   const options = [`<option value="">All categories</option>`]
-    .concat(APPROVAL_CATEGORIES.map(([type, label]) =>
+    .concat(approvalCategories().map(([type, label]) =>
       `<option value="${type}" ${approvalsCategoryFilter === type ? 'selected' : ''}>${label}</option>`));
   return `
     <select onchange="setApprovalsCategoryFilter(this.value)"
@@ -2118,7 +2418,7 @@ async function loadApprovals() {
   const res = await fetch(`${base}?limit=10000&offset=0`, { headers: authHeaders() });
   if (!res.ok) return;
   const raw = await res.json();
-  const scoped = raw.items.filter(inst => PORTAL_WORKFLOW_TYPES.includes(inst.workflow_type));
+  const scoped = raw.items.filter(inst => visiblePortalWorkflowTypes().includes(inst.workflow_type));
   const filtered = approvalsCategoryFilter
     ? scoped.filter(inst => inst.workflow_type === approvalsCategoryFilter)
     : scoped;
@@ -2235,6 +2535,169 @@ function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.style.display = 'block';
   setTimeout(() => t.style.display = 'none', 3000);
+}
+
+// ---------------- Home: domain relationship diagram ----------------
+//
+// Phase 5 (domain-agnostic): the post-login landing view. Reuses the
+// Lineage tab's pan/zoom-on-an-SVG-canvas approach (drag to pan, wheel to
+// zoom, fit-to-view on first render) but with its own transform state
+// (home* instead of gov*) so the two diagrams' interactions never collide,
+// and its own visual language: domain nodes are rectangles color-coded by
+// this user's access + the domain's pipeline_status, relationship nodes are
+// a visually distinct diamond sitting on the edge between the two domains
+// they connect. No domain name is hardcoded here -- the whole graph comes
+// from GET /api/v1/domains + GET /api/v1/domains/relationships.
+
+let homeTransform = { x: 40, y: 20, scale: 1 };
+let homeInitialTransform = { x: 40, y: 20, scale: 1 };
+let homePanState = null;
+
+async function loadDomainsAndRelationships() {
+  const [domRes, relRes] = await Promise.all([
+    fetch(`${API}/domains`, { headers: authHeaders() }),
+    fetch(`${API}/domains/relationships`, { headers: authHeaders() }),
+  ]);
+  domainsList = domRes.ok ? (await domRes.json()).domains : [];
+  domainRelationships = relRes.ok ? (await relRes.json()).relationships : [];
+}
+
+const HOME_NODE_W = 200, HOME_NODE_H = 60, HOME_COL_W = 280, HOME_ROW_Y = 60;
+const HOME_LINK_SIZE = 46;
+
+function homeNodeClass(domain) {
+  if (!domain.has_access) return 'locked';
+  if (domain.pipeline_status !== 'live') return 'planned';
+  return 'live-access';
+}
+
+function homeStatusLabel(domain) {
+  if (!domain.has_access) return 'NO ACCESS';
+  if (domain.pipeline_status !== 'live') return 'PLANNED';
+  return domain.access_level.toUpperCase();
+}
+
+function renderHomeGraph() {
+  const wrap = document.getElementById('homeCanvasWrap');
+  if (!domainsList.length) {
+    wrap.innerHTML = '<div class="empty-state" style="padding-top:80px;">No domains configured.</div>';
+    return;
+  }
+
+  // Simple single-row layout: one column per domain, in domain_registry's
+  // own sort_order. A relationship node sits below the midpoint of the two
+  // domains it connects (offset a bit if more than one relationship shares
+  // that midpoint), with an edge up to each side.
+  const domainX = {};
+  domainsList.forEach((d, i) => { domainX[d.domain_key] = i * HOME_COL_W + 40; });
+  const midXCounts = {};
+
+  let svg = `<svg id="homeSvg" width="100%" height="100%" viewBox="0 0 1200 460" xmlns="http://www.w3.org/2000/svg">`;
+  svg += `<rect id="homeBackground" x="-5000" y="-5000" width="10000" height="10000" fill="transparent"/>`;
+  svg += `<g id="homeRoot" transform="translate(${homeTransform.x},${homeTransform.y}) scale(${homeTransform.scale})">`;
+
+  // Relationship nodes + their two edges, drawn first so domain boxes sit on top.
+  domainRelationships.forEach((rel, i) => {
+    const xa = domainX[rel.domain_a_key], xb = domainX[rel.domain_b_key];
+    if (xa === undefined || xb === undefined) return;
+    const midKey = Math.round((xa + xb) / 2);
+    const stackIdx = midXCounts[midKey] || 0;
+    midXCounts[midKey] = stackIdx + 1;
+    const lx = (xa + xb) / 2 + HOME_NODE_W / 2;
+    const ly = HOME_ROW_Y + HOME_NODE_H + 90 + stackIdx * 80;
+
+    const y1 = HOME_ROW_Y + HOME_NODE_H, y2 = HOME_ROW_Y + HOME_NODE_H;
+    svg += `<path class="home-edge-line" d="M${xa + HOME_NODE_W / 2},${y1} C${xa + HOME_NODE_W / 2},${ly} ${lx},${ly} ${lx},${ly}"/>`;
+    svg += `<path class="home-edge-line" d="M${xb + HOME_NODE_W / 2},${y2} C${xb + HOME_NODE_W / 2},${ly} ${lx},${ly} ${lx},${ly}"/>`;
+
+    const s = HOME_LINK_SIZE;
+    svg += `<g class="home-link-node" data-rel-idx="${i}">
+      <polygon points="${lx},${ly - s / 2} ${lx + s / 2},${ly} ${lx},${ly + s / 2} ${lx - s / 2},${ly}">
+        <title>${escapeXml(rel.relationship_label)}: ${escapeXml(rel.description || '')}</title>
+      </polygon>
+      <text x="${lx}" y="${ly + 3}">LINK</text>
+    </g>`;
+  });
+
+  domainsList.forEach(d => {
+    const x = domainX[d.domain_key], y = HOME_ROW_Y;
+    const cls = homeNodeClass(d);
+    svg += `<g class="home-node-box ${cls}" data-domain="${escapeXml(d.domain_key)}">
+      <rect x="${x}" y="${y}" width="${HOME_NODE_W}" height="${HOME_NODE_H}" rx="10"/>
+      <text class="home-node-title" x="${x + 16}" y="${y + 24}">${escapeXml(d.display_name)}</text>
+      <text class="home-node-sub" x="${x + 16}" y="${y + 42}">${escapeXml(homeStatusLabel(d))}</text>
+      ${!d.has_access ? `<text class="home-lock-icon" x="${x + HOME_NODE_W - 24}" y="${y + 24}">🔒</text>` : ''}
+    </g>`;
+  });
+
+  svg += `</g></svg>`;
+  wrap.innerHTML = svg;
+
+  wrap.querySelectorAll('.home-node-box').forEach(el => {
+    el.addEventListener('click', ev => { ev.stopPropagation(); enterDomain(el.dataset.domain); });
+  });
+  wrap.querySelectorAll('.home-link-node').forEach(el => {
+    el.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const rel = domainRelationships[parseInt(el.dataset.relIdx, 10)];
+      if (rel) showToast(`${rel.relationship_label}: ${rel.description || ''}`);
+    });
+  });
+
+  if (homeInitialTransform.computed !== true) {
+    const contentW = domainsList.length * HOME_COL_W + 80;
+    const scale = Math.min(1, 1100 / contentW);
+    homeTransform = { x: 40, y: 20, scale: scale > 0 ? scale : 1 };
+    homeInitialTransform = { ...homeTransform, computed: true };
+    applyHomeTransform();
+  }
+  attachHomePanHandlers(wrap);
+}
+
+function applyHomeTransform() {
+  const root = document.getElementById('homeRoot');
+  if (root) root.setAttribute('transform', `translate(${homeTransform.x},${homeTransform.y}) scale(${homeTransform.scale})`);
+}
+
+function attachHomePanHandlers(wrap) {
+  wrap.onmousedown = (e) => {
+    if (e.target.closest('.home-node-box') || e.target.closest('.home-link-node')) return;
+    homePanState = { startX: e.clientX, startY: e.clientY, origX: homeTransform.x, origY: homeTransform.y };
+    wrap.classList.add('grabbing');
+  };
+  window.addEventListener('mousemove', (e) => {
+    if (!homePanState) return;
+    homeTransform.x = homePanState.origX + (e.clientX - homePanState.startX);
+    homeTransform.y = homePanState.origY + (e.clientY - homePanState.startY);
+    applyHomeTransform();
+  });
+  window.addEventListener('mouseup', () => { homePanState = null; wrap.classList.remove('grabbing'); });
+  wrap.onwheel = (e) => {
+    e.preventDefault();
+    homeTransform.scale = Math.max(0.3, Math.min(3, homeTransform.scale * (e.deltaY < 0 ? 1.1 : 0.9)));
+    applyHomeTransform();
+  };
+}
+
+// Entering a domain from Home scopes Dashboard/Browse/the record modal to
+// it -- see currentDomain's declaration up top. Access and pipeline-status
+// gating mirrors exactly what the backend itself enforces (403 vs. 409), so
+// the message the user sees here is never a surprise once they click through.
+async function enterDomain(domainKey) {
+  const domain = domainsList.find(d => d.domain_key === domainKey);
+  if (!domain) return;
+  if (!domain.has_access) {
+    showToast(`You don't have access to ${domain.display_name}. Ask an Admin to grant it in User Administration.`);
+    return;
+  }
+  if (domain.pipeline_status !== 'live') {
+    showToast(`The ${domain.display_name} domain has no pipeline yet — not yet available.`);
+    return;
+  }
+  currentDomain = domain;
+  document.getElementById('navBrowse').textContent = `Browse ${domain.entity_label_plural}`;
+  await getDomainAttributes(domainKey);
+  showView('dashboard');
 }
 
 // ---------------- Data Governance: network diagram ----------------

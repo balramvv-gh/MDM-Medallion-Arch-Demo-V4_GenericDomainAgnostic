@@ -17,7 +17,6 @@ def get_con():
         _con = duckdb.connect(DB_PATH)
         _ensure_stewardship_tables(_con)
         _ensure_match_review_tables(_con)
-        _ensure_silver_snapshot_table(_con)
         _ensure_auth_tables(_con)
         _ensure_audit_tables(_con)
         _ensure_governance_tables(_con)
@@ -25,6 +24,22 @@ def get_con():
         _ensure_bus_rules_tables(_con)
         _ensure_entity_type_registry(_con)
         _ensure_domain_tables(_con)
+        # Flush the ensure/migrate DDL above out of the WAL immediately,
+        # rather than leaving it to accumulate for however long this process
+        # (a long-lived FastAPI server, potentially) stays up. Observed
+        # empirically: this installed DuckDB build (1.5.4) can fail to
+        # replay a WAL that contains an ALTER TABLE ... ADD COLUMN ... DEFAULT
+        # entry (raises an internal "GetDefaultDatabase" assertion) if the
+        # file is reopened by a fresh process before that WAL is ever
+        # checkpointed -- e.g. the API process being stopped without an
+        # explicit shutdown checkpoint (see the shutdown handler in
+        # api/main.py, which covers the normal-exit path; this call is the
+        # belt to that suspenders, since a crash bypasses shutdown handlers
+        # entirely). A crashed/killed process can't be prevented from ever
+        # happening, so minimizing the window during which a
+        # not-yet-checkpointed ALTER sits in the WAL is the practical
+        # mitigation available here.
+        _con.execute("CHECKPOINT")
     return _con
 
 
@@ -78,22 +93,22 @@ def _ensure_stewardship_tables(con):
         );
     """)
     # Records that a steward has corrected and approved land here, then flow
-    # back into silver_customers on the next pipeline run (re-validated).
+    # back into the real-time reprocessing path (api/reprocessing.py's
+    # reprocess_corrected_record) immediately, and into main_silver.records on
+    # the next full pipeline run (re-validated either way).
+    #
+    # Phase 4 (domain-agnostic): attribute-bag shaped like every other table
+    # in this codebase since Phase 2 -- domain_key + a JSON attributes column
+    # (attribute_key -> corrected value) instead of a fixed 10-column Customer
+    # shape, so a steward's correction to ANY domain's record can be logged
+    # here with no schema change.
     con.execute("""
         CREATE TABLE IF NOT EXISTS stewardship.remediated_records (
             exception_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
             source_system VARCHAR,
             source_record_id VARCHAR,
-            first_name VARCHAR,
-            last_name VARCHAR,
-            email VARCHAR,
-            phone VARCHAR,
-            address_line1 VARCHAR,
-            address_line2 VARCHAR,
-            city VARCHAR,
-            state_code VARCHAR,
-            postal_code VARCHAR,
-            country_code VARCHAR,
+            attributes VARCHAR,   -- JSON: attribute_key -> corrected value
             resolved_ts TIMESTAMP DEFAULT current_timestamp
         );
     """)
@@ -139,24 +154,16 @@ def _ensure_match_review_tables(con):
     """)
 
 
-def _ensure_silver_snapshot_table(con):
-    """Point-in-time snapshot of main_silver.silver_customers' identity +
-    source_modified_date, kept specifically so scripts/cancel_stale_match_reviews.py
-    can detect "an updated version of this source+SourceID landed in silver"
-    across a batch `dbt run` -- silver has no other diff mechanism (dbt
-    CREATE OR REPLACEs the whole table every run, same reason
-    audit.gold_customers_snapshot exists for the gold layer / audit_pipeline_diff.py).
-    Lives in the stewardship schema (not audit) because it's read/written only
-    by the match-review-hold feature, not part of the gold-layer audit trail."""
-    con.execute("CREATE SCHEMA IF NOT EXISTS stewardship;")
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS stewardship.silver_customers_snapshot (
-            source_system VARCHAR,
-            source_record_id VARCHAR,
-            source_modified_date TIMESTAMP,
-            PRIMARY KEY (source_system, source_record_id)
-        );
-    """)
+# Phase 4 (domain-agnostic) note: stewardship.silver_records_snapshot (point-
+# in-time identity + source_modified_date snapshot of main_silver.records,
+# domain_key-scoped) and audit.golden_records_snapshot (same idea for the gold
+# layer) are NOT created here. Both are owned entirely by the one standalone
+# batch script that reads/writes them (scripts/cancel_stale_match_reviews.py
+# and scripts/audit_pipeline_diff.py respectively), which already creates its
+# own table via CREATE TABLE IF NOT EXISTS -- the same "standalone scripts
+# duplicate DDL rather than importing db.py" convention documented in
+# api/audit.py's module docstring. The API layer never reads either table, so
+# there's no reason for get_con() to also create them.
 
 
 def _ensure_audit_tables(con):
@@ -168,9 +175,9 @@ def _ensure_audit_tables(con):
     application-level guarantee, consistent with how gold_access read/read_write
     is already enforced in api/auth.py rather than via DB permissions).
 
-    gold_customers_snapshot lives in this same schema specifically so it survives
-    every `dbt run`'s CREATE OR REPLACE of main_gold.gold_customers -- it's how
-    scripts/audit_pipeline_diff.py detects what changed across a batch rebuild."""
+    audit.golden_records_snapshot (domain_key-scoped, attributes JSON) is
+    created and owned by scripts/audit_pipeline_diff.py, not here -- see the
+    note above _ensure_stewardship_tables' silver-snapshot comment for why."""
     con.execute("CREATE SCHEMA IF NOT EXISTS audit;")
     con.execute("""
         CREATE TABLE IF NOT EXISTS audit.audit_trail (
@@ -187,15 +194,6 @@ def _ensure_audit_tables(con):
             new_value VARCHAR,
             change_reason VARCHAR,
             related_exception_id VARCHAR
-        );
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS audit.gold_customers_snapshot (
-            golden_id VARCHAR PRIMARY KEY,
-            first_name VARCHAR, last_name VARCHAR, email VARCHAR, phone VARCHAR,
-            address_line1 VARCHAR, address_line2 VARCHAR, city VARCHAR, state_code VARCHAR,
-            postal_code VARCHAR, country_code VARCHAR, source_system_count INTEGER,
-            survivor_source_system VARCHAR, survivor_source_record_id VARCHAR
         );
     """)
 
@@ -413,9 +411,23 @@ def _ensure_bus_rules_tables(con):
     rule, per the governance decision that there is exactly one primary rule
     per column plus one fixed tie-break, not an arbitrary stack."""
     con.execute("CREATE SCHEMA IF NOT EXISTS bus_rules;")
+    # Phase 2/3 (domain-agnostic): every bus_rules table below carries
+    # domain_key (+ attribute_key/target_column, already-existing columns
+    # that stay as-is) so a rule can target ANY domain's attributes, not
+    # just Customer's fixed column set -- see scripts/
+    # migrate_column_rules_to_domain.py and migrate_matching_rules_to_domain.py
+    # for the full migration rationale. Baked directly into the CREATE TABLE
+    # here (rather than only an ALTER TABLE in those standalone scripts) so a
+    # brand-new database created purely by starting the API -- with neither
+    # script ever run -- still gets the correct domain-scoped shape; the
+    # backfill migration below (_migrate_bus_rules_to_domain) mirrors both
+    # scripts' logic so it's also safe to run against a pre-Phase-2 DB opened
+    # directly by the API.
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.column_rules (
             rule_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
+            attribute_key VARCHAR,
             source_system VARCHAR,
             source_column VARCHAR,
             rule_type VARCHAR,        -- not_null | regex | reference_state | reference_country | trim_case_proper | standardize_phone_us | lowercase
@@ -431,6 +443,8 @@ def _ensure_bus_rules_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.matching_rules (
             rule_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
+            attribute_key VARCHAR,
             tier_id VARCHAR,
             rule_role VARCHAR,        -- exact_match_field | similarity_text_field | blocking_key
             rule_order INTEGER,
@@ -446,6 +460,7 @@ def _ensure_bus_rules_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.matching_thresholds (
             tier_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
             tier_order INTEGER,
             tier_name VARCHAR,
             match_method VARCHAR,
@@ -462,7 +477,9 @@ def _ensure_bus_rules_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.survivorship_rules (
             rule_id VARCHAR PRIMARY KEY,
-            target_column VARCHAR UNIQUE,  -- gold_customers column this rule governs
+            domain_key VARCHAR,
+            attribute_key VARCHAR,
+            target_column VARCHAR,  -- golden_records attribute this rule governs (legacy name, see attribute_key)
             rule_type VARCHAR,             -- most_common | most_complete | oldest | newest | pattern_match
             rule_param VARCHAR,            -- pattern_match only: a regex to prefer
             active BOOLEAN DEFAULT true,
@@ -504,6 +521,88 @@ def _ensure_bus_rules_tables(con):
                 INSERT INTO bus_rules.survivorship_rules (rule_id, target_column, rule_type, rule_param, description)
                 VALUES (?, ?, ?, ?, ?)
             """, row)
+
+    _migrate_bus_rules_to_domain(con)
+
+
+# (source_system, source_column) -> (domain_key, attribute_key), covering
+# every DEFAULT_COLUMN_RULES row (R001-R015). Mirrors
+# scripts/migrate_column_rules_to_domain.py's _CANONICAL_MAP exactly -- kept
+# in sync with that file.
+_COLUMN_RULES_CANONICAL_MAP = {
+    ("CRM", "first_name"): "first_name",
+    ("CRM", "last_name"): "last_name",
+    ("CRM", "email"): "email",
+    ("CRM", "state"): "state_code",
+    ("CRM", "country"): "country_code",
+    ("CRM", "phone"): "phone",
+    ("ERP", "email_addr"): "email",
+    ("ERP", "contact_phone"): "phone",
+    ("ERP", "state_code"): "state_code",
+    ("ERP", "country_code"): "country_code",
+    # ERP's full_name (R009) intentionally has NO entry -- see
+    # scripts/migrate_column_rules_to_domain.py's docstring.
+}
+
+# R016: promotes CRM's previously-hardcoded "phone is required" check into a
+# real governed rule. See scripts/migrate_column_rules_to_domain.py's
+# docstring -- kept in sync with that file's _NEW_RULES.
+_COLUMN_RULES_NEW_ROWS = [
+    ("R016", "CRM", "phone", "not_null", None, "reject",
+     "Phone is required (promoted from a pre-Phase-2 hardcoded check -- "
+     "see scripts/migrate_column_rules_to_domain.py)."),
+]
+
+
+def _migrate_bus_rules_to_domain(con):
+    """Backfills domain_key (+ attribute_key/target_column) onto every
+    bus_rules.* row that doesn't have one yet -- identical logic to
+    scripts/migrate_column_rules_to_domain.py and
+    migrate_matching_rules_to_domain.py, duplicated here (same "API and
+    standalone scripts each stay self-contained" convention used elsewhere
+    in this codebase, e.g. api/reprocessing.py's PY_TRANSFORMS/SQL_TRANSFORMS)
+    so that opening the duckdb file directly via the API -- without either
+    migration script having been run first -- still ends up in the correct
+    domain-scoped shape. Idempotent: only touches rows where domain_key IS
+    NULL, so re-running (or running after the standalone scripts already
+    did) is a safe no-op."""
+    rows = con.execute(
+        "SELECT rule_id, source_system, source_column FROM bus_rules.column_rules WHERE domain_key IS NULL"
+    ).fetchall()
+    for rule_id, source_system, source_column in rows:
+        attribute_key = _COLUMN_RULES_CANONICAL_MAP.get((source_system, source_column))
+        if attribute_key is None:
+            # R009 (ERP full_name): composite check, deliberately left
+            # without an attribute_key -- see _CANONICAL_MAP's comment above.
+            con.execute("UPDATE bus_rules.column_rules SET domain_key = 'customer' WHERE rule_id = ?", [rule_id])
+        else:
+            con.execute(
+                "UPDATE bus_rules.column_rules SET domain_key = 'customer', attribute_key = ? WHERE rule_id = ?",
+                [attribute_key, rule_id],
+            )
+    existing_ids = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.column_rules").fetchall())
+    for rule_id, source_system, attribute_key, rule_type, rule_param, severity, description in _COLUMN_RULES_NEW_ROWS:
+        if rule_id in existing_ids:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.column_rules
+                (rule_id, domain_key, source_system, attribute_key, source_column,
+                 rule_type, rule_param, severity, description)
+            VALUES (?, 'customer', ?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, source_system, attribute_key, attribute_key, rule_type, rule_param, severity, description))
+
+    con.execute("""
+        UPDATE bus_rules.matching_rules SET domain_key = 'customer', attribute_key = source_column
+        WHERE domain_key IS NULL
+    """)
+    con.execute("""
+        UPDATE bus_rules.matching_thresholds SET domain_key = 'customer'
+        WHERE domain_key IS NULL
+    """)
+    con.execute("""
+        UPDATE bus_rules.survivorship_rules SET domain_key = 'customer', attribute_key = target_column
+        WHERE domain_key IS NULL
+    """)
 
 
 # Migrated verbatim from dbt_project/seeds/column_rules.csv.
@@ -603,13 +702,25 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
             {"key": "is_active", "label": "Status", "type": "boolean"},
         ]),
     ),
+    # Phase 4 (domain-agnostic): every rules_config field_schema below adds
+    # domain_key (which domain this rule governs) and attribute_key (which of
+    # that domain's governance.domain_attributes rows it targets) as plain
+    # text fields -- not a hardcoded 'select' of literal domain/attribute
+    # names (the survivorship_rule target_column field used to list
+    # Customer's exact column names here, which is exactly the kind of
+    # domain-name-in-code this phase eliminates). A steward types the
+    # domain_key/attribute_key value directly; GET /api/v1/domains and
+    # GET /api/v1/rules-config/... already expose the live governed lists for
+    # a frontend to render as an actual dropdown without any hardcoding here.
     (
         "column_rule", "rules_config", "Column Rules", "Column Rule",
         "bus_rules.column_rules", "rule_id", "rule_id", "CR", "rules_config_change",
         None, 1,
         json.dumps([
-            {"key": "source_system", "label": "Source System", "type": "select", "options": ["CRM", "ERP"]},
-            {"key": "source_column", "label": "Source Column", "type": "text"},
+            {"key": "domain_key", "label": "Domain", "type": "text"},
+            {"key": "attribute_key", "label": "Attribute", "type": "text"},
+            {"key": "source_system", "label": "Source System", "type": "text"},
+            {"key": "source_column", "label": "Source Column (legacy, reference only)", "type": "text"},
             {"key": "rule_type", "label": "Rule Type", "type": "select", "options": [
                 "not_null", "regex", "reference_state", "reference_country",
                 "trim_case_proper", "standardize_phone_us", "lowercase",
@@ -625,11 +736,13 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
         "bus_rules.matching_rules", "rule_id", "rule_id", "MR", "rules_config_change",
         None, 2,
         json.dumps([
+            {"key": "domain_key", "label": "Domain", "type": "text"},
+            {"key": "attribute_key", "label": "Attribute", "type": "text"},
             {"key": "tier_id", "label": "Tier ID", "type": "text"},
             {"key": "rule_role", "label": "Rule Role", "type": "select",
              "options": ["exact_match_field", "similarity_text_field", "blocking_key"]},
             {"key": "rule_order", "label": "Rule Order", "type": "number"},
-            {"key": "source_column", "label": "Source Column", "type": "text"},
+            {"key": "source_column", "label": "Source Column (legacy, reference only)", "type": "text"},
             {"key": "transform_function", "label": "Transform Function", "type": "select",
              "options": ["none", "normalize_email", "normalize_phone"]},
             {"key": "description", "label": "Description", "type": "text"},
@@ -641,10 +754,11 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
         "bus_rules.matching_thresholds", "tier_id", "tier_order", "MT", "rules_config_change",
         None, 3,
         json.dumps([
+            {"key": "domain_key", "label": "Domain", "type": "text"},
             {"key": "tier_order", "label": "Tier Order", "type": "number"},
             {"key": "tier_name", "label": "Tier Name", "type": "text"},
             {"key": "match_method", "label": "Match Method", "type": "select",
-             "options": ["exact", "fuzzy_tfidf_cosine"]},
+             "options": ["exact", "fuzzy_tfidf_cosine", "no_match_baseline"]},
             {"key": "is_match_tier", "label": "Is Match Tier", "type": "boolean"},
             {"key": "auto_merge_threshold", "label": "Auto-Merge Threshold", "type": "number"},
             {"key": "review_lower_threshold", "label": "Review Lower Threshold", "type": "number"},
@@ -657,10 +771,9 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
         "bus_rules.survivorship_rules", "rule_id", "rule_id", "SR", "rules_config_change",
         None, 4,
         json.dumps([
-            {"key": "target_column", "label": "Target Column", "type": "select", "options": [
-                "first_name", "last_name", "email", "phone", "address_line1",
-                "address_line2", "city", "state_code", "postal_code", "country_code",
-            ]},
+            {"key": "domain_key", "label": "Domain", "type": "text"},
+            {"key": "attribute_key", "label": "Attribute", "type": "text"},
+            {"key": "target_column", "label": "Target Column (legacy, reference only)", "type": "text"},
             {"key": "rule_type", "label": "Rule Type", "type": "select",
              "options": ["most_common", "most_complete", "oldest", "newest", "pattern_match", "shortest_value"]},
             {"key": "rule_param", "label": "Rule Param (pattern_match only, a regex)", "type": "text"},
@@ -705,6 +818,17 @@ def _ensure_entity_type_registry(con):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, row)
 
+    # field_schema can drift from DEFAULT_ENTITY_TYPE_REGISTRY as this file
+    # evolves (e.g. Phase 4 added domain_key/attribute_key to the four
+    # rules_config entity types) -- this table has no write endpoint anywhere
+    # in the API, so re-syncing every row's field_schema to the current
+    # DEFAULT_ENTITY_TYPE_REGISTRY on every app start is always safe.
+    for row in DEFAULT_ENTITY_TYPE_REGISTRY:
+        con.execute(
+            "UPDATE governance.entity_type_registry SET field_schema = ? WHERE entity_type = ?",
+            [row[-1], row[0]],
+        )
+
 
 # ---------------------------------------------------------------------------
 # Domain-agnostic architecture (V4): domain_registry/domain_attributes/
@@ -731,19 +855,21 @@ DEFAULT_DOMAINS = [
      "planned", True, 2),
 ]
 
+# is_dashboard_breakdown: see scripts/ensure_domain_metadata.py's copy of
+# this constant for the full docstring -- must stay in sync.
 DEFAULT_CUSTOMER_ATTRIBUTES = [
-    ("first_name", "First Name", "string", True, False, True, False, 1),
-    ("last_name", "Last Name", "string", True, False, True, False, 2),
-    ("email", "Email", "string", True, True, False, False, 3),
-    ("phone", "Phone", "string", False, True, False, False, 4),
-    ("address_line1", "Address Line 1", "string", False, False, True, False, 5),
-    ("address_line2", "Address Line 2", "string", False, False, True, False, 6),
-    ("city", "City", "string", False, False, True, False, 7),
-    ("state_code", "State", "string", True, False, False, True, 8),
-    ("postal_code", "Postal Code", "string", False, False, False, False, 9),
-    ("country_code", "Country", "string", True, False, False, False, 10),
-    ("source_created_date", "Source Created Date", "date", False, False, False, False, 11),
-    ("source_modified_date", "Source Modified Date", "date", False, False, False, False, 12),
+    ("first_name", "First Name", "string", True, False, True, False, False, 1),
+    ("last_name", "Last Name", "string", True, False, True, False, False, 2),
+    ("email", "Email", "string", True, True, False, False, False, 3),
+    ("phone", "Phone", "string", False, True, False, False, False, 4),
+    ("address_line1", "Address Line 1", "string", False, False, True, False, False, 5),
+    ("address_line2", "Address Line 2", "string", False, False, True, False, False, 6),
+    ("city", "City", "string", False, False, True, False, False, 7),
+    ("state_code", "State", "string", True, False, False, True, True, 8),
+    ("postal_code", "Postal Code", "string", False, False, False, False, False, 9),
+    ("country_code", "Country", "string", True, False, False, False, True, 10),
+    ("source_created_date", "Source Created Date", "date", False, False, False, False, False, 11),
+    ("source_modified_date", "Source Modified Date", "date", False, False, False, False, False, 12),
 ]
 
 DEFAULT_CUSTOMER_SOURCE_SYSTEMS = [
@@ -756,6 +882,56 @@ DEFAULT_DOMAIN_RELATIONSHIPS = [
      "Illustrative link between the Customer and Product domains (e.g. "
      "purchase history) -- Product has no pipeline yet, so this "
      "relationship is metadata only for now."),
+]
+
+# Phase 2: how each domain/source system's raw field names map onto
+# canonical attribute_keys, plus which standardization transform to apply.
+# See scripts/ensure_domain_metadata.py's matching section for the full
+# rationale -- duplicated here per this file's schema-duplication
+# convention (kept in sync with that script).
+DEFAULT_SOURCE_FIELD_MAPPINGS = [
+    ("SFM001", "customer", "CRM", "first_name", "attributes->>'first_name'", "trim_proper_case",
+     "CRM's first_name column, trimmed and proper-cased (R006/R007)."),
+    ("SFM002", "customer", "CRM", "last_name", "attributes->>'last_name'", "trim_proper_case",
+     "CRM's last_name column, trimmed and proper-cased (R006/R007)."),
+    ("SFM003", "customer", "CRM", "email", "attributes->>'email'", "trim",
+     "CRM's email column, trimmed only -- NOT lowercased (matches pre-Phase-2 behavior; ERP's is)."),
+    ("SFM004", "customer", "CRM", "phone", "attributes->>'phone'", "phone_e164_us",
+     "CRM's phone column, standardized to +1XXXXXXXXXX (R008)."),
+    ("SFM005", "customer", "CRM", "address_line1", "attributes->>'address_line1'", "trim", None),
+    ("SFM006", "customer", "CRM", "city", "attributes->>'city'", "trim", None),
+    ("SFM007", "customer", "CRM", "state_code", "attributes->>'state'", "upper_trim",
+     "CRM's raw column is named 'state'; canonical attribute is state_code."),
+    ("SFM008", "customer", "CRM", "postal_code", "attributes->>'zip'", "trim",
+     "CRM's raw column is named 'zip'; canonical attribute is postal_code."),
+    ("SFM009", "customer", "CRM", "country_code", "attributes->>'country'", "upper_trim",
+     "CRM's raw column is named 'country'; canonical attribute is country_code."),
+    (
+        "SFM010", "customer", "ERP", "first_name",
+        "split_part(attributes->>'full_name', ',', 2)", "trim_proper_case",
+        "ERP's full_name arrives as \"Last, First\" -- second comma-part is the first name.",
+    ),
+    (
+        "SFM011", "customer", "ERP", "last_name",
+        "split_part(attributes->>'full_name', ',', 1)", "trim_proper_case",
+        "ERP's full_name arrives as \"Last, First\" -- first comma-part is the last name.",
+    ),
+    ("SFM012", "customer", "ERP", "email", "attributes->>'email_addr'", "lowercase_trim",
+     "ERP's email_addr column, lowercased and trimmed (R014)."),
+    ("SFM013", "customer", "ERP", "phone", "attributes->>'contact_phone'", "phone_e164_us",
+     "ERP's contact_phone column, standardized to +1XXXXXXXXXX (R015)."),
+    ("SFM014", "customer", "ERP", "address_line1", "attributes->>'addr1'", "trim", None),
+    ("SFM015", "customer", "ERP", "address_line2", "attributes->>'addr2'", "trim", None),
+    ("SFM016", "customer", "ERP", "city", "attributes->>'city_code'", "trim", None),
+    ("SFM017", "customer", "ERP", "state_code", "attributes->>'state_code'", "upper_trim", None),
+    ("SFM018", "customer", "ERP", "postal_code", "attributes->>'postal_code'", "trim", None),
+    ("SFM019", "customer", "ERP", "country_code", "attributes->>'country_code'", "upper_trim", None),
+    # source_created_date / source_modified_date: see
+    # scripts/ensure_domain_metadata.py's mirror of this constant for the
+    # full rationale (ERP deliberately has no source_created_date mapping).
+    ("SFM020", "customer", "CRM", "source_created_date", "attributes->>'created_date'", "none", None),
+    ("SFM021", "customer", "CRM", "source_modified_date", "attributes->>'modified_date'", "none", None),
+    ("SFM022", "customer", "ERP", "source_modified_date", "attributes->>'last_updated'", "none", None),
 ]
 
 
@@ -794,6 +970,7 @@ def _ensure_domain_tables(con):
             PRIMARY KEY (domain_key, attribute_key)
         );
     """)
+    con.execute("ALTER TABLE governance.domain_attributes ADD COLUMN IF NOT EXISTS is_dashboard_breakdown BOOLEAN DEFAULT false;")
     con.execute("""
         CREATE TABLE IF NOT EXISTS governance.domain_source_systems (
             domain_key VARCHAR,
@@ -856,9 +1033,17 @@ def _ensure_domain_tables(con):
         con.execute("""
             INSERT INTO governance.domain_attributes
                 (domain_key, attribute_key, display_label, data_type, is_required,
-                 is_matching_field, is_similarity_text_field, is_blocking_key, sort_order)
-            VALUES ('customer', ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_matching_field, is_similarity_text_field, is_blocking_key,
+                 is_dashboard_breakdown, sort_order)
+            VALUES ('customer', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, attr)
+
+    con.execute("""
+        UPDATE governance.domain_attributes
+        SET is_dashboard_breakdown = true
+        WHERE domain_key = 'customer' AND attribute_key IN ('state_code', 'country_code')
+          AND NOT is_dashboard_breakdown
+    """)
 
     existing_sources = set(
         (r[0], r[1]) for r in con.execute(
@@ -884,6 +1069,34 @@ def _ensure_domain_tables(con):
             INSERT INTO governance.domain_relationships
                 (relationship_id, domain_a_key, domain_b_key, relationship_label, description)
             VALUES (?, ?, ?, ?, ?)
+        """, row)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS governance.source_field_mappings (
+            mapping_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
+            source_system_key VARCHAR,
+            attribute_key VARCHAR,
+            source_expr VARCHAR,
+            transform_function VARCHAR DEFAULT 'none',
+            active BOOLEAN DEFAULT true,
+            description VARCHAR,
+            created_ts TIMESTAMP DEFAULT current_timestamp,
+            updated_ts TIMESTAMP DEFAULT current_timestamp,
+            updated_by VARCHAR
+        );
+    """)
+    existing_mappings = set(
+        r[0] for r in con.execute("SELECT mapping_id FROM governance.source_field_mappings").fetchall()
+    )
+    for row in DEFAULT_SOURCE_FIELD_MAPPINGS:
+        if row[0] in existing_mappings:
+            continue
+        con.execute("""
+            INSERT INTO governance.source_field_mappings
+                (mapping_id, domain_key, source_system_key, attribute_key, source_expr,
+                 transform_function, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, row)
 
     _migrate_user_domain_access(con)

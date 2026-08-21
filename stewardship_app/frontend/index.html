@@ -548,6 +548,88 @@ function authHeaders() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5 (domain-agnostic): every domain this account knows about (for
+// display_name lookups), and a per-domain cache of governance.domain_attributes
+// (for building field lists on the fly). Exceptions, match-review pairs, and
+// gold records all carry their own domain_key, and this console's queues
+// deliberately mix every domain a steward can see (see enterApp() above) --
+// so, unlike portal_app's single currentDomain, there is no one "current"
+// domain here; every record-rendering function below looks up attributes by
+// that record's own domain_key.
+// ---------------------------------------------------------------------------
+let domainsList = [];
+const domainAttrsCache = {};
+
+async function loadDomainsList() {
+  const res = await fetch(`${API}/domains`, { headers: authHeaders() });
+  domainsList = res.ok ? (await res.json()).domains : [];
+}
+
+async function getDomainAttributes(domainKey) {
+  if (!domainKey) return [];
+  if (domainAttrsCache[domainKey]) return domainAttrsCache[domainKey];
+  const res = await fetch(`${API}/domains/${domainKey}/attributes`, { headers: authHeaders() });
+  const data = res.ok ? await res.json() : { attributes: [] };
+  domainAttrsCache[domainKey] = data.attributes || [];
+  return domainAttrsCache[domainKey];
+}
+
+// Warms the cache for every distinct domain_key found in a list of records
+// (queue items can span multiple domains on one page) before any of them
+// are rendered.
+async function warmDomainAttrsFor(items, domainKeyField) {
+  const keys = Array.from(new Set(items.map(it => it[domainKeyField]).filter(Boolean)));
+  await Promise.all(keys.map(k => getDomainAttributes(k)));
+}
+
+function attrFieldPairs(domainKey) {
+  return (domainAttrsCache[domainKey] || []).map(a => [a.attribute_key, a.display_label]);
+}
+
+function parseAttrsJson(raw) {
+  if (raw == null) return {};
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch (e) { return {}; }
+  }
+  return raw;
+}
+function parseAttrs(record) {
+  return record ? parseAttrsJson(record.attributes) : {};
+}
+
+// Best-effort human-readable label for a record: joins the values of
+// whichever attributes this domain flagged is_similarity_text_field, in
+// their defined order. Falls back to an empty string (callers show the
+// record/pair id instead) when a domain hasn't flagged any such attribute.
+function recordDisplayLabel(attrs, domainKey) {
+  const fields = (domainAttrsCache[domainKey] || []).filter(a => a.is_similarity_text_field);
+  const parts = fields.map(f => attrs[f.attribute_key]).filter(Boolean);
+  return parts.join(' ');
+}
+
+// Same idea as domainAccessDiffHtml would need in portal_app, but this app
+// only ever *displays* a domain_access_update instance (submitted from the
+// admin portal) inside its Approvals panel -- it never originates one.
+function domainAccessDiffHtml(current, proposed) {
+  const keys = Array.from(new Set([...Object.keys(current || {}), ...Object.keys(proposed || {})]));
+  if (!keys.length) return '<div style="font-size:12px;color:var(--text-dim);">No domain access changes.</div>';
+  return `<div class="field-grid">${keys.map(k => {
+    const domain = domainsList.find(d => d.domain_key === k);
+    const label = domain ? domain.display_name : k;
+    const curVal = (current || {})[k];
+    const newVal = (proposed || {})[k];
+    const changed = newVal !== undefined && newVal !== curVal;
+    const displayVal = changed ? newVal : curVal;
+    return `
+      <div class="field field-readonly${changed ? ' field-diff' : ''}">
+        <label>${escapeApprovalText(label)}</label>
+        <div class="field-readonly-value">${escapeApprovalText(displayVal ?? 'none')}</div>
+        ${changed && curVal !== undefined ? `<div class="field-old-value">was: ${escapeApprovalText(curVal)}</div>` : ''}
+      </div>`;
+  }).join('')}</div>`;
+}
+
+// ---------------------------------------------------------------------------
 // Shared pagination helper. Every list view registers a pager state keyed by
 // a stable string (pagerState), reads its current limit/offset (pagerParams),
 // fetches through pagedFetch (which auto-corrects the page if a filter/search
@@ -651,7 +733,7 @@ function showScreen(id) {
   });
 }
 
-function enterApp() {
+async function enterApp() {
   if (!ALLOWED_ROLES.includes(session.user.role)) {
     document.getElementById('deniedMessage').textContent =
       `Signed in as ${session.user.full_name} (${roleLabel(session.user.role)}). ` +
@@ -662,6 +744,13 @@ function enterApp() {
   document.getElementById('userFullName').textContent = session.user.full_name;
   document.getElementById('userRoleBadge').textContent = roleLabel(session.user.role).toUpperCase();
   showScreen('appShell');
+  // Phase 5 (domain-agnostic): this console's queues are deliberately
+  // cross-domain (a steward's remit spans every domain -- see api/main.py's
+  // Phase 4 comment on the Exception Queue/Match Review staying role-gated,
+  // not domain-gated), so there's no "enter a domain" step here the way
+  // portal_app has. domainsList is still loaded once at login -- it's only
+  // used for display_name lookups (e.g. the domain-access Approvals diff).
+  await loadDomainsList();
   switchView('dashboard');
 }
 
@@ -673,7 +762,7 @@ async function tryRestoreSession() {
     const res = await fetch(`${API}/auth/me`, { headers: { 'Authorization': `Bearer ${stored.token}` } });
     if (res.ok) {
       session = stored;
-      enterApp();
+      await enterApp();
     } else {
       clearSession();
       showScreen('loginScreen');
@@ -697,7 +786,7 @@ async function doLogin() {
   }
   document.getElementById('loginError').style.display = 'none';
   saveSession(await res.json());
-  enterApp();
+  await enterApp();
 }
 
 async function doLogout() {
@@ -1029,14 +1118,18 @@ async function loadExceptionQueue() {
     panel.innerHTML = '<div class="empty-state">No records match this view.</div>';
     return;
   }
-  panel.innerHTML = data.items.map(item => `
+  await warmDomainAttrsFor(data.items, 'domain_key');
+  panel.innerHTML = data.items.map(item => {
+    const label = recordDisplayLabel(parseAttrs(item), item.domain_key) || '(no name)';
+    return `
     <div class="queue-item" data-id="${item.exception_id}" onclick="selectItem('${item.exception_id}')">
       <div class="qid">${item.source_system} · ${item.source_record_id}</div>
-      <div class="qname">${item.first_name || '(no first name)'} ${item.last_name || '(no last name)'}</div>
-      ${item.reject_reasons.map(r => `<span class="qreason">${r}</span>`).join(' ')}
+      <div class="qname">${escapeApprovalText(label)}</div>
+      ${item.reject_reasons.map(r => `<span class="qreason">${escapeApprovalText(r)}</span>`).join(' ')}
       ${item.effective_status !== 'open' ? `<span class="status-pill ${statusPillClass(item.effective_status)}">${formatStatusLabel(item.effective_status)}</span>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 async function loadMatchReviewQueue() {
@@ -1051,14 +1144,19 @@ async function loadMatchReviewQueue() {
     panel.innerHTML = '<div class="empty-state">No records match this view.</div>';
     return;
   }
-  panel.innerHTML = data.items.map(item => `
+  await warmDomainAttrsFor(data.items, 'domain_key');
+  panel.innerHTML = data.items.map(item => {
+    const labelA = recordDisplayLabel(parseAttrsJson(item.attributes_a), item.domain_key) || '—';
+    const labelB = recordDisplayLabel(parseAttrsJson(item.attributes_b), item.domain_key) || '—';
+    return `
     <div class="queue-item match-item" data-id="${item.pair_id}" onclick="selectMatchItem('${item.pair_id}')">
       <div class="qid">${item.source_system_a} · ${item.source_record_id_a}  ⇄  ${item.source_system_b} · ${item.source_record_id_b}</div>
-      <div class="qname">${item.first_name_a || '—'} ${item.last_name_a || '—'}  vs.  ${item.first_name_b || '—'} ${item.last_name_b || '—'}</div>
+      <div class="qname">${escapeApprovalText(labelA)}  vs.  ${escapeApprovalText(labelB)}</div>
       <span class="qscore">similarity ${item.similarity_score.toFixed(2)}</span>
       ${item.effective_status !== 'pending' ? `<span class="status-pill ${statusPillClass(item.effective_status)}">${formatStatusLabel(item.effective_status)}</span>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 async function selectItem(exceptionId) {
@@ -1066,35 +1164,36 @@ async function selectItem(exceptionId) {
   const res = await fetch(`${API}/stewardship/queue/${exceptionId}`, { headers: authHeaders() });
   currentItem = await res.json();
   editedFields = {};
+  await getDomainAttributes(currentItem.domain_key);
   renderDetail();
 }
-
-const FIELD_LABELS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
-  ['phone', 'Phone'], ['address_line1', 'Address'], ['city', 'City'],
-  ['state_code', 'State'], ['postal_code', 'Postal code'], ['country_code', 'Country'],
-];
 
 function renderDetail() {
   const panel = document.getElementById('detailPanel');
   const item = currentItem;
+  const attrs = parseAttrs(item);
+  const label = recordDisplayLabel(attrs, item.domain_key) || '(no name)';
   const editable = item.effective_status === 'open';
+  // Every active attribute is editable except date-typed ones (source
+  // provenance timestamps, not corrected content) -- a generic,
+  // metadata-driven exclusion instead of the old hand-curated FIELD_LABELS.
+  const editableAttrs = (domainAttrsCache[item.domain_key] || []).filter(a => a.data_type !== 'date');
   panel.innerHTML = `
     <div class="record-header">
-      <h2>${item.first_name || '—'} ${item.last_name || '—'}</h2>
+      <h2>${escapeApprovalText(label)}</h2>
       <span class="source-badge">${item.source_system} · ${item.source_record_id}</span>
     </div>
     ${!editable ? `<div class="readonly-badge">Read-only · status: ${formatStatusLabel(item.effective_status)}</div>` : ''}
     ${editable ? `
     <div class="reasons-box">
       <div class="label">FAILED VALIDATION</div>
-      <ul>${item.reject_reasons.map(r => `<li>${r}</li>`).join('')}</ul>
+      <ul>${item.reject_reasons.map(r => `<li>${escapeApprovalText(r)}</li>`).join('')}</ul>
     </div>
     <div class="field-grid" id="fieldGrid">
-      ${FIELD_LABELS.map(([key, label]) => `
-        <div class="field" id="field-${key}">
-          <label>${label}</label>
-          <input type="text" value="${item[key] ?? ''}" oninput="onFieldEdit('${key}', this.value)">
+      ${editableAttrs.map(a => `
+        <div class="field" id="field-${a.attribute_key}">
+          <label>${escapeApprovalText(a.display_label)}</label>
+          <input type="text" value="${attrs[a.attribute_key] ?? ''}" oninput="onFieldEdit('${a.attribute_key}', this.value)">
         </div>
       `).join('')}
     </div>
@@ -1115,12 +1214,13 @@ function renderDetail() {
 // Approvals detail panel (proposedFields = the submitted applied_fields,
 // so changed fields render highlighted with the prior value shown below).
 function exceptionRecordFormHtml(item, proposedFields) {
+  const flat = { ...parseAttrs(item), source_system: item.source_system, source_record_id: item.source_record_id };
   return `
     <div class="reasons-box">
       <div class="label">FAILED VALIDATION</div>
       <ul>${(item.reject_reasons || []).map(r => `<li>${escapeApprovalText(r)}</li>`).join('')}</ul>
     </div>
-    ${entityFieldsFormHtml(FIELD_LABELS, item, proposedFields || {})}
+    ${entityFieldsFormHtml(attrFieldPairs(item.domain_key), flat, proposedFields || {})}
   `;
 }
 
@@ -1238,16 +1338,11 @@ async function rejectItem() {
   }
 }
 
-const COMPARE_FIELD_LABELS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
-  ['phone', 'Phone'], ['address_line1', 'Address'], ['city', 'City'],
-  ['state_code', 'State'], ['postal_code', 'Postal code'],
-];
-
 async function selectMatchItem(pairId) {
   document.querySelectorAll('.queue-item').forEach(el => el.classList.toggle('active', el.dataset.id === pairId));
   const res = await fetch(`${API}/stewardship/match-review/${pairId}`, { headers: authHeaders() });
   currentMatchItem = await res.json();
+  await getDomainAttributes(currentMatchItem.domain_key);
   renderMatchDetail();
 }
 
@@ -1255,17 +1350,20 @@ async function selectMatchItem(pairId) {
 // tab's own detail view and the embedded form shown in the Approvals panel
 // for 'match_review_confirmation' items -- there is no field-level proposal
 // to diff here (confirm/reject doesn't edit any fields), so this is always
-// just the current pair data.
+// just the current pair data. attributes_a/attributes_b are each a
+// domain-shaped attributes JSON blob (Phase 3's gold_match_review_queue
+// shape), not the old flat `${key}_a`/`${key}_b` columns.
 function matchRecordFormHtml(item) {
-  const rows = COMPARE_FIELD_LABELS.map(([key, label]) => {
-    const valA = item[`${key}_a`] ?? '';
-    const valB = item[`${key}_b`] ?? '';
+  const attrsA = parseAttrsJson(item.attributes_a), attrsB = parseAttrsJson(item.attributes_b);
+  const rows = attrFieldPairs(item.domain_key).map(([key, label]) => {
+    const valA = attrsA[key] ?? '';
+    const valB = attrsB[key] ?? '';
     const diff = String(valA).toLowerCase() !== String(valB).toLowerCase();
     return { key, label, valA, valB, diff };
   });
   return `
     <div class="similarity-banner">
-      <span class="label">EMBEDDING SIMILARITY (name + address, blocked on ${item.blocking_key})</span>
+      <span class="label">EMBEDDING SIMILARITY (blocked on ${escapeApprovalText(item.blocking_key)})</span>
       <span class="score">${item.similarity_score.toFixed(3)}</span>
     </div>
     <div class="compare-grid">
@@ -1290,6 +1388,15 @@ function matchRecordFormHtml(item) {
     </div>`;
 }
 
+// domain_key's entity_label_singular, lowercased, for use inline in a
+// sentence (e.g. "same customer" / "same product") -- falls back to the
+// generic word "record" if the domain isn't found (shouldn't happen once
+// domainsList has loaded, but keeps this from ever rendering blank).
+function domainEntityLabelSingular(domainKey) {
+  const domain = domainsList.find(d => d.domain_key === domainKey);
+  return domain && domain.entity_label_singular ? domain.entity_label_singular.toLowerCase() : 'record';
+}
+
 function renderMatchDetail() {
   const item = currentMatchItem;
   const panel = document.getElementById('detailPanel');
@@ -1305,7 +1412,7 @@ function renderMatchDetail() {
     ${matchRecordFormHtml(item)}
     ${editable ? `
     <div class="actions">
-      <button class="btn-confirm" onclick="confirmMatch()">Confirm — same customer, merge</button>
+      <button class="btn-confirm" onclick="confirmMatch()">Confirm — same ${escapeApprovalText(domainEntityLabelSingular(item.domain_key))}, merge</button>
       <button class="btn-reject" onclick="rejectMatch()">Reject — not a duplicate</button>
     </div>` : ''}
   `;
@@ -1401,11 +1508,13 @@ function summarizeInstance(inst) {
 // ---- Field label lists + fetchers for the embedded "record" form shown in
 // the Approvals detail panel, one per workflow_type. ----------------------
 
-const GOLD_FIELD_LABELS = [
-  ['first_name', 'First name'], ['last_name', 'Last name'], ['email', 'Email'],
-  ['phone', 'Phone'], ['address_line1', 'Address line 1'], ['address_line2', 'Address line 2'],
-  ['city', 'City'], ['state_code', 'State'], ['postal_code', 'Postal code'], ['country_code', 'Country'],
-];
+// Phase 5 (domain-agnostic): GOLD_FIELD_LABELS used to be hardcoded here --
+// gold_record_edit instances carry their own domain_key in payload.domain_key,
+// so this app's shared attrFieldPairs()/getDomainAttributes() (declared near
+// authHeaders() above) replace it, same as exceptionRecordFormHtml/
+// matchRecordFormHtml above. (This app's own Approvals queue never actually
+// originates a gold_record_edit -- see STEWARDSHIP_WORKFLOW_TYPES -- but the
+// branch is kept for parity with portal_app's copy of this panel.)
 const USER_FIELD_LABELS = [
   ['username', 'Username'], ['full_name', 'Full name'], ['role', 'Role'],
   ['gold_access', 'Gold access'], ['is_active', 'Status'],
@@ -1459,19 +1568,32 @@ async function fetchApprovalRecordData(inst) {
     await loadGovernedEntityCatalog();
   }
   try {
+    // Phase 5 (domain-agnostic): warm this record's domain's attribute list
+    // before renderApprovalRecordSection needs it synchronously.
     if (inst.workflow_type === 'stewardship_remediation') {
       const r = await fetch(`${API}/stewardship/queue/${inst.entity_id}`, { headers: authHeaders() });
-      return r.ok ? await r.json() : null;
+      if (!r.ok) return null;
+      const rec = await r.json();
+      if (rec.domain_key) await getDomainAttributes(rec.domain_key);
+      return rec;
     }
     if (inst.workflow_type === 'match_review_confirmation') {
       const r = await fetch(`${API}/stewardship/match-review/${inst.entity_id}`, { headers: authHeaders() });
-      return r.ok ? await r.json() : null;
+      if (!r.ok) return null;
+      const rec = await r.json();
+      if (rec.domain_key) await getDomainAttributes(rec.domain_key);
+      return rec;
     }
     if (inst.workflow_type === 'gold_record_edit') {
+      if (p.domain_key) await getDomainAttributes(p.domain_key);
       return p.old_snapshot || null;   // already embedded in the workflow payload
     }
     if (inst.workflow_type === 'user_admin_change') {
       if (inst.action_type === 'create') return null;   // brand-new user, nothing to diff against
+      if (inst.action_type === 'domain_access_update') {
+        const r = await fetch(`${API}/admin/users/${inst.entity_id}/domain-access`, { headers: authHeaders() });
+        return r.ok ? await r.json() : null;   // {user_id, domain_access: [{domain_key, display_name, gold_access}]}
+      }
       const r = await fetch(`${API}/admin/users?limit=1000`, { headers: authHeaders() });
       if (!r.ok) return null;
       const data = await r.json();
@@ -1527,16 +1649,28 @@ function renderApprovalRecordSection(inst, rec) {
     `;
   }
   if (inst.workflow_type === 'gold_record_edit') {
+    const flat = parseAttrs(rec);
     return `
       <div class="record-header" style="margin-top:4px;">
         <h2 style="font-size:17px;">Golden Record</h2>
         <span class="source-badge">${inst.entity_id}</span>
       </div>
-      ${entityFieldsFormHtml(GOLD_FIELD_LABELS, rec || {}, p.updates || {})}
+      ${entityFieldsFormHtml(attrFieldPairs(p.domain_key), flat, p.updates || {})}
     `;
   }
   if (inst.workflow_type === 'user_admin_change') {
     const isCreate = inst.action_type === 'create';
+    if (inst.action_type === 'domain_access_update') {
+      const currentByDomain = {};
+      (rec && rec.domain_access || []).forEach(d => { currentByDomain[d.domain_key] = d.gold_access; });
+      return `
+        <div class="record-header" style="margin-top:4px;">
+          <h2 style="font-size:17px;">Domain Access</h2>
+          <span class="source-badge">${inst.entity_id}</span>
+        </div>
+        ${domainAccessDiffHtml(currentByDomain, p.domain_access || {})}
+      `;
+    }
     return `
       <div class="record-header" style="margin-top:4px;">
         <h2 style="font-size:17px;">${isCreate ? 'New User' : 'User'}</h2>
@@ -1544,6 +1678,10 @@ function renderApprovalRecordSection(inst, rec) {
       </div>
       ${isCreate ? '<div class="new-entity-badge">New user — nothing to compare against</div>' : ''}
       ${entityFieldsFormHtml(USER_FIELD_LABELS, isCreate ? {} : (rec || {}), isCreate ? p : (p.updates || {}))}
+      ${isCreate && p.domain_access && Object.keys(p.domain_access).length ? `
+        <div class="dash-section-label" style="margin-top:0;">Domain access</div>
+        ${domainAccessDiffHtml({}, p.domain_access)}
+      ` : ''}
     `;
   }
   if (inst.workflow_type === 'reference_data_change') {

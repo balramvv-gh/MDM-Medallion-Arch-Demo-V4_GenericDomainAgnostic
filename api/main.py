@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from db import run_query, run_write, to_records
+from db import run_query, run_write, to_records, get_con
 from ai_remediation import suggest_remediation
 import lineage as lineage_mod
 import auth as auth_mod
@@ -21,9 +21,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 app = FastAPI(
     title="MDM Demo API",
-    description="Gold-layer REST API, lineage/impact analysis, and data stewardship endpoints "
-                "for the MDM medallion architecture demo.",
-    version="1.0.0",
+    description="Domain-agnostic gold-layer REST API, lineage/impact analysis, and data "
+                "stewardship endpoints for the MDM medallion architecture demo.",
+    version="4.0.0",
 )
 
 app.add_middleware(
@@ -32,6 +32,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("shutdown")
+def _checkpoint_on_shutdown():
+    """Flushes any WAL-only writes into the main duckdb file before the
+    process exits. api/db.py's get_con() also checkpoints right after its
+    one-time schema setup (belt-and-suspenders against a crash that skips
+    this handler entirely) -- see that call's docstring for why an
+    un-checkpointed WAL matters with this installed DuckDB build."""
+    try:
+        get_con().execute("CHECKPOINT")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -133,27 +146,125 @@ def decide_workflow_instance(instance_id: str, body: WorkflowDecisionRequest,
 
 
 # ---------------------------------------------------------------------------
-# (e) REST API over the Gold layer, for downstream system consumption
+# Phase 4 (domain-agnostic): Home / domain catalog -- backs the post-login
+# relationship-diagram Home page (Phase 5, frontend, not yet built). No
+# domain or relationship name is hardcoded here; every value comes from
+# governance.domain_registry / domain_relationships / user_domain_access.
 # ---------------------------------------------------------------------------
 
-# Shared by _CUSTOMERS_ENRICHED_CTE (display) and _golden_id_flagged_for_match_review
+@app.get("/api/v1/domains")
+def list_domains(user: dict = Depends(auth_mod.get_current_user)):
+    """Every active domain, with the CALLING user's own access level and
+    whether this domain has a real pipeline yet (pipeline_status). The Home
+    diagram renders every domain (so the platform's shape is visible even to
+    a user with no access to a given domain) but locks/greys out ones the
+    user can't open and marks 'planned' domains as not yet available --
+    this endpoint gives the frontend everything it needs to do both without
+    any further per-domain call."""
+    domains = to_records(run_query(
+        "SELECT * FROM governance.domain_registry WHERE is_active ORDER BY sort_order"
+    ))
+    access = run_query(
+        "SELECT domain_key, gold_access FROM governance.user_domain_access WHERE user_id = ?",
+        [user["user_id"]],
+    )
+    access_by_domain = dict(zip(access["domain_key"], access["gold_access"])) if not access.empty else {}
+    for d in domains:
+        level = access_by_domain.get(d["domain_key"], "none")
+        d["access_level"] = level
+        d["has_access"] = level in ("read", "read_write")
+    return {"domains": domains}
+
+
+@app.get("/api/v1/domains/relationships")
+def list_domain_relationships(user: dict = Depends(auth_mod.get_current_user)):
+    """Active domain-to-domain relationships (e.g. 'Customer-Product link')
+    for the Home diagram's distinctly-styled link nodes."""
+    return {"relationships": to_records(run_query(
+        "SELECT * FROM governance.domain_relationships WHERE is_active"
+    ))}
+
+
+def _require_known_domain(domain_key: str) -> dict:
+    """404s if domain_key isn't an active governance.domain_registry row.
+    Every domain-scoped endpoint below calls this first so an unrecognized
+    or inactive domain_key fails loudly and uniformly, rather than each
+    endpoint silently querying empty tables for a typo'd domain."""
+    df = run_query("SELECT * FROM governance.domain_registry WHERE domain_key = ? AND is_active", [domain_key])
+    if df.empty:
+        raise HTTPException(404, f"Unknown or inactive domain '{domain_key}'")
+    return to_records(df)[0]
+
+
+def _require_live_domain(domain_key: str) -> dict:
+    """Like _require_known_domain, but also 409s a domain that's registered
+    but has no real pipeline yet (pipeline_status='planned') -- e.g. the
+    'product' placeholder domain. Every records/dashboard endpoint (which
+    reads real bronze/silver/gold data) uses this; the plain domain catalog
+    endpoints above don't, since a placeholder domain is still meant to
+    appear (and be selectable, surfacing 'not yet available') on the Home
+    diagram."""
+    domain = _require_known_domain(domain_key)
+    if domain["pipeline_status"] != "live":
+        raise HTTPException(
+            409,
+            f"The '{domain['display_name']}' domain has no pipeline yet (pipeline_status="
+            f"'{domain['pipeline_status']}') -- not yet available.",
+        )
+    return domain
+
+
+@app.get("/api/v1/domains/{domain_key}/attributes")
+def list_domain_attributes(domain_key: str, user: dict = Depends(auth_mod.require_domain_read)):
+    """Phase 5 (frontend): the one new read endpoint the domain-agnostic UIs
+    need that didn't already exist -- every active governance.domain_attributes
+    row for this domain, in display order. Both portal_app's record browse/edit
+    forms and stewardship_app's exception/match-review compare grids build
+    their field lists from this response instead of a hardcoded array of
+    Customer field names, so neither frontend needs a code change to support
+    a new domain or a new/renamed attribute on an existing one."""
+    _require_live_domain(domain_key)
+    attrs = to_records(run_query(
+        "SELECT attribute_key, display_label, data_type, is_required, is_matching_field, "
+        "is_similarity_text_field, is_blocking_key, is_dashboard_breakdown, sort_order "
+        "FROM governance.domain_attributes WHERE domain_key = ? AND active ORDER BY sort_order",
+        [domain_key],
+    ))
+    return {"domain_key": domain_key, "attributes": attrs}
+
+
+# ---------------------------------------------------------------------------
+# (e) REST API over the Gold layer, for downstream system consumption.
+#
+# Phase 4 (domain-agnostic): replaces the old fixed-Customer /api/v1/customers
+# routes. Every golden record everywhere (any domain) lives in the shared
+# main_gold.golden_records / gold_crosswalk attribute-bag tables (Phase 3);
+# these endpoints are parameterized by domain_key (a path parameter) and
+# gated per-domain via governance.user_domain_access (auth_mod.
+# require_domain_read/require_domain_write), replacing the old global
+# gold_access check.
+# ---------------------------------------------------------------------------
+
+# Shared by _records_enriched_sql (display) and _golden_id_flagged_for_match_review
 # (write-path block) so the two can never disagree about which golden_ids are
-# currently sitting in a pending Match Review pair -- same "can't drift" principle
-# as pending_edits below. A pair counts using the same live-override-overlay
-# logic the Match Review queue endpoints themselves use (COALESCE the override
-# onto the dbt-built snapshot's own review_status), and stays flagged through
-# both 'pending' (not yet actioned by a steward) and 'in_review' (a steward's
-# confirm/reject has been submitted and is awaiting Data Owner + Admin sign-off
-# in the 'match_review_confirmation' workflow -- i.e. sitting in the
-# stewardship app's Approvals list). Stopping at 'pending' left a window where
-# a golden record about to be merged/retired by an in-flight match decision
-# still showed as freely editable in the portal.
-_PENDING_MATCH_REVIEW_CTE = """
+# currently sitting in a pending Match Review pair -- same "can't drift"
+# principle as pending_edits below. A pair counts using the same
+# live-override-overlay logic the Match Review queue endpoints themselves
+# use (COALESCE the override onto the dbt-built snapshot's own
+# review_status), and stays flagged through both 'pending' (not yet actioned
+# by a steward) and 'in_review' (a steward's confirm/reject has been
+# submitted and is awaiting Data Owner + Admin sign-off in the
+# 'match_review_confirmation' workflow -- i.e. sitting in the stewardship
+# app's Approvals list). Stopping at 'pending' left a window where a golden
+# record about to be merged/retired by an in-flight match decision still
+# showed as freely editable in the portal.
+def _pending_match_review_cte_sql() -> str:
+    return """
     pending_match_pairs AS (
         SELECT q.source_system_a, q.source_record_id_a, q.source_system_b, q.source_record_id_b
         FROM main_gold.gold_match_review_queue q
         LEFT JOIN stewardship.match_review_overrides o ON o.pair_id = q.pair_id
-        WHERE COALESCE(o.status, q.review_status) IN ('pending', 'in_review')
+        WHERE q.domain_key = ? AND COALESCE(o.status, q.review_status) IN ('pending', 'in_review')
     ),
     flagged_golden_ids AS (
         SELECT DISTINCT cw.golden_id
@@ -161,61 +272,73 @@ _PENDING_MATCH_REVIEW_CTE = """
         JOIN pending_match_pairs p
           ON (cw.source_system = p.source_system_a AND cw.source_record_id = p.source_record_id_a)
           OR (cw.source_system = p.source_system_b AND cw.source_record_id = p.source_record_id_b)
+        WHERE cw.domain_key = ?
     )
-"""
+    """
 
-_CUSTOMERS_ENRICHED_CTE = """
+
+def _records_enriched_sql() -> str:
+    """CTE prefix backing every list/detail record endpoint below. Callers
+    must supply domain_key 4 times (once per '?' below, in this exact
+    order) as the first params, followed by any of their own filter params,
+    then `SELECT * FROM enriched ...`."""
+    return """
     WITH crosswalk_max AS (
         SELECT golden_id, MAX(match_confidence_score) AS max_confidence
-        FROM main_gold.gold_crosswalk
+        FROM main_gold.gold_crosswalk WHERE domain_key = ?
         GROUP BY golden_id
     ),
     tier1_threshold AS (
-        SELECT auto_merge_threshold AS v FROM bus_rules.matching_thresholds WHERE tier_id = 'MT001'
+        SELECT auto_merge_threshold AS v FROM bus_rules.matching_thresholds
+        WHERE domain_key = ? AND active AND is_match_tier AND match_method = 'exact'
+        LIMIT 1
     ),
     pending_edits AS (
         SELECT DISTINCT entity_id AS golden_id
         FROM governance.workflow_instances
         WHERE workflow_type = 'gold_record_edit' AND status = 'pending'
     ),
-    """ + _PENDING_MATCH_REVIEW_CTE + """,
+    """ + _pending_match_review_cte_sql() + """,
     enriched AS (
         SELECT
-            gc.*,
+            gr.*,
             CASE
-                WHEN gc.source_system_count <= 1 THEN 'provisional'
-                WHEN COALESCE(cm.max_confidence, 0) >= (SELECT v FROM tier1_threshold) THEN 'tier1'
+                WHEN gr.source_system_count <= 1 THEN 'provisional'
+                WHEN COALESCE(cm.max_confidence, 0) >= COALESCE((SELECT v FROM tier1_threshold), 1.0) THEN 'tier1'
                 ELSE 'tier2'
             END AS confidence_tier,
             (pe.golden_id IS NOT NULL) AS pending_approval,
             (fg.golden_id IS NOT NULL) AS pending_match_review
-        FROM main_gold.gold_customers gc
-        LEFT JOIN crosswalk_max cm ON cm.golden_id = gc.golden_id
-        LEFT JOIN pending_edits pe ON pe.golden_id = gc.golden_id
-        LEFT JOIN flagged_golden_ids fg ON fg.golden_id = gc.golden_id
+        FROM main_gold.golden_records gr
+        LEFT JOIN crosswalk_max cm ON cm.golden_id = gr.golden_id
+        LEFT JOIN pending_edits pe ON pe.golden_id = gr.golden_id
+        LEFT JOIN flagged_golden_ids fg ON fg.golden_id = gr.golden_id
+        WHERE gr.domain_key = ?
     )
-"""
+    """
 
 
-def _golden_id_flagged_for_match_review(golden_id: str) -> bool:
-    """Used by update_customer to block edits -- separate from the enriched
-    CTE (rather than switching update_customer's own fetch to it) so the
+def _golden_id_flagged_for_match_review(domain_key: str, golden_id: str) -> bool:
+    """Used by update_record to block edits -- separate from the enriched
+    CTE (rather than switching update_record's own fetch to it) so the
     gold_record_edit workflow payload's old_snapshot stays exactly the raw
-    gold_customers columns it always has been."""
+    golden_records row it always has been."""
     df = run_query("""
-        WITH """ + _PENDING_MATCH_REVIEW_CTE + """
+        WITH """ + _pending_match_review_cte_sql() + """
         SELECT 1 FROM flagged_golden_ids WHERE golden_id = ?
-    """, [golden_id])
+    """, [domain_key, domain_key, golden_id])
     return not df.empty
 
 
 def _golden_id_has_pending_edit(golden_id: str) -> bool:
-    """Used by update_customer to block a second concurrent gold_record_edit
+    """Used by update_record to block a second concurrent gold_record_edit
     submission on a golden_id that already has one pending -- same 'can't
     drift' reasoning as _golden_id_flagged_for_match_review: the portal
     already renders this record read-only (pending_approval flag in
-    _CUSTOMERS_ENRICHED_CTE) while a decision is in flight, so the API must
-    refuse it too rather than relying on the UI alone."""
+    _records_enriched_sql) while a decision is in flight, so the API must
+    refuse it too rather than relying on the UI alone. golden_id alone is
+    enough (no domain_key needed) since golden_id is already
+    domain-qualified ('GOLD-<DOMAIN>-00001')."""
     df = run_query("""
         SELECT 1 FROM governance.workflow_instances
         WHERE workflow_type = 'gold_record_edit' AND status = 'pending' AND entity_id = ?
@@ -223,28 +346,41 @@ def _golden_id_has_pending_edit(golden_id: str) -> bool:
     return not df.empty
 
 
-@app.get("/api/v1/customers")
-def list_customers(
+@app.get("/api/v1/records/{domain_key}")
+def list_records(
+    domain_key: str,
     limit: int = 10, offset: int = 0,
-    state_code: Optional[str] = None,
-    country_code: Optional[str] = None,
     source_system_count: Optional[int] = None,
     survivor_source_system: Optional[str] = None,
     confidence_tier: Optional[str] = None,
     pending_approval: Optional[bool] = None,
+    attr_key: Optional[str] = None,
+    attr_value: Optional[str] = None,
     q: Optional[str] = None,
-    user: dict = Depends(auth_mod.require_gold_read),
+    user: dict = Depends(auth_mod.require_domain_read),
 ):
-    """Backs both the plain Browse Customers screen and every dashboard
-    drill-through. Every filter composes against the same 'enriched' view
-    (gold_customers + a live-computed confidence_tier + a pending_approval
-    flag sourced from governance.workflow_instances), so a dashboard chart's
-    count and its drill-through list can never disagree."""
+    """Backs both the Browse Records screen and every dashboard
+    drill-through, for any domain. Every filter composes against the same
+    'enriched' view (golden_records + a live-computed confidence_tier + a
+    pending_approval flag sourced from governance.workflow_instances), so a
+    dashboard chart's count and its drill-through list can never disagree.
+
+    `q` is a generic substring search across every attribute's value (via
+    the attributes JSON's own text representation) plus golden_id -- this
+    replaces the old hardcoded per-field (first_name/last_name/email)
+    search, since no fixed field list can be assumed for an arbitrary
+    domain.
+
+    `attr_key`/`attr_value` is an exact-match filter on one attribute's
+    value (e.g. state_code='CA') -- this is what the Portal Dashboard's
+    per-attribute breakdown bars (GET .../portal/dashboard/{domain_key}/
+    summary's `breakdowns`) drill through to, replacing the old hardcoded
+    clickState()/clickCountry() query params. attr_key is validated against
+    this domain's own governance.domain_attributes before being interpolated
+    into the query, the same way update_record validates body.updates'
+    keys."""
+    _require_live_domain(domain_key)
     clauses, params = [], []
-    if state_code:
-        clauses.append("state_code = ?"); params.append(state_code)
-    if country_code:
-        clauses.append("country_code = ?"); params.append(country_code)
     if source_system_count is not None:
         clauses.append("source_system_count = ?"); params.append(source_system_count)
     if survivor_source_system:
@@ -255,60 +391,82 @@ def list_customers(
         clauses.append("confidence_tier = ?"); params.append(confidence_tier)
     if pending_approval is not None:
         clauses.append("pending_approval = ?"); params.append(pending_approval)
+    if attr_key is not None:
+        valid_attrs = set(run_query(
+            "SELECT attribute_key FROM governance.domain_attributes WHERE domain_key = ? AND active",
+            [domain_key],
+        )["attribute_key"])
+        if attr_key not in valid_attrs:
+            raise HTTPException(400, f"Unknown attribute '{attr_key}' for domain '{domain_key}'")
+        if attr_value in (None, "(unknown)"):
+            clauses.append(f"(attributes->>'{attr_key}' IS NULL)")
+        else:
+            clauses.append(f"(attributes->>'{attr_key}' = ?)"); params.append(attr_value)
     if q:
-        clauses.append(
-            "(lower(first_name) LIKE lower(?) OR lower(last_name) LIKE lower(?) "
-            "OR lower(email) LIKE lower(?) OR golden_id LIKE ?)"
-        )
+        clauses.append("(lower(cast(attributes AS VARCHAR)) LIKE lower(?) OR golden_id LIKE ?)")
         like = f"%{q}%"
-        params.extend([like, like, like, f"%{q}%"])
+        params.extend([like, f"%{q}%"])
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    base_params = [domain_key, domain_key, domain_key, domain_key, domain_key]
     df = run_query(
-        _CUSTOMERS_ENRICHED_CTE + f"SELECT * FROM enriched {where} ORDER BY golden_id LIMIT ? OFFSET ?",
-        params + [limit, offset],
+        _records_enriched_sql() + f"SELECT * FROM enriched {where} ORDER BY golden_id LIMIT ? OFFSET ?",
+        base_params + params + [limit, offset],
     )
     total = run_query(
-        _CUSTOMERS_ENRICHED_CTE + f"SELECT COUNT(*) AS n FROM enriched {where}", params
+        _records_enriched_sql() + f"SELECT COUNT(*) AS n FROM enriched {where}", base_params + params
     ).iloc[0]["n"]
-    return {"total": int(total), "limit": limit, "offset": offset, "customers": to_records(df)}
+    return {"domain_key": domain_key, "total": int(total), "limit": limit, "offset": offset,
+            "records": to_records(df)}
 
 
-@app.get("/api/v1/customers/{golden_id}")
-def get_customer(golden_id: str, user: dict = Depends(auth_mod.require_gold_read)):
-    df = run_query(_CUSTOMERS_ENRICHED_CTE + "SELECT * FROM enriched WHERE golden_id = ?", [golden_id])
+@app.get("/api/v1/records/{domain_key}/{golden_id}")
+def get_record(domain_key: str, golden_id: str, user: dict = Depends(auth_mod.require_domain_read)):
+    _require_live_domain(domain_key)
+    df = run_query(
+        _records_enriched_sql() + "SELECT * FROM enriched WHERE golden_id = ?",
+        [domain_key, domain_key, domain_key, domain_key, domain_key, golden_id],
+    )
     if df.empty:
         raise HTTPException(404, f"No golden record found for {golden_id}")
     return to_records(df)[0]
 
 
-@app.get("/api/v1/customers/{golden_id}/sources")
-def get_customer_sources(golden_id: str, user: dict = Depends(auth_mod.require_gold_read)):
-    df = run_query("SELECT * FROM main_gold.gold_crosswalk WHERE golden_id = ?", [golden_id])
+@app.get("/api/v1/records/{domain_key}/{golden_id}/sources")
+def get_record_sources(domain_key: str, golden_id: str, user: dict = Depends(auth_mod.require_domain_read)):
+    _require_live_domain(domain_key)
+    df = run_query(
+        "SELECT * FROM main_gold.gold_crosswalk WHERE domain_key = ? AND golden_id = ?",
+        [domain_key, golden_id],
+    )
     if df.empty:
         raise HTTPException(404, f"No crosswalk entries found for {golden_id}")
-    return {"golden_id": golden_id, "sources": to_records(df)}
+    return {"golden_id": golden_id, "domain_key": domain_key, "sources": to_records(df)}
 
 
-@app.get("/api/v1/customers/{golden_id}/audit-trail")
-def get_customer_audit_trail(golden_id: str, limit: int = 10, offset: int = 0,
-                              user: dict = Depends(auth_mod.require_gold_read)):
+@app.get("/api/v1/records/{domain_key}/{golden_id}/audit-trail")
+def get_record_audit_trail(domain_key: str, golden_id: str, limit: int = 10, offset: int = 0,
+                            user: dict = Depends(auth_mod.require_domain_read)):
     """Read-only, append-only history of every creation, edit (manual or
     systemic), and logical delete recorded for one golden record. Gated the
-    same way as viewing the record itself (any gold_access of 'read' or
-    'read_write') -- there is no corresponding write/delete endpoint, by design.
-    Falls back to a reconstruction from the audit log itself if the record has
-    been logically deleted (no longer present in main_gold.gold_customers).
+    same way as viewing the record itself -- there is no corresponding
+    write/delete endpoint, by design. Falls back to a reconstruction from
+    the audit log itself if the record has been logically deleted (no
+    longer present in main_gold.golden_records).
 
     Pagination happens at the logical-event level (one change_batch_id --
     e.g. a single edit touching 5 fields -- is one page item), not the raw
     field-diff row level, so a page never splits one event's field rows
     across two pages."""
+    _require_live_domain(domain_key)
     events = audit_mod.get_audit_trail(golden_id)
     if not events:
         raise HTTPException(404, f"No audit history found for {golden_id}")
 
-    current_df = run_query("SELECT * FROM main_gold.gold_customers WHERE golden_id = ?", [golden_id])
+    current_df = run_query(
+        "SELECT * FROM main_gold.golden_records WHERE domain_key = ? AND golden_id = ?",
+        [domain_key, golden_id],
+    )
     if not current_df.empty:
         current = to_records(current_df)[0]
         is_active = True
@@ -330,42 +488,43 @@ def get_customer_audit_trail(golden_id: str, limit: int = 10, offset: int = 0,
     page_events = [e for batch in page_batches for e in batch]
 
     return {
-        "golden_id": golden_id, "is_active": is_active, "current": current,
+        "golden_id": golden_id, "domain_key": domain_key, "is_active": is_active, "current": current,
         "total": total, "limit": limit, "offset": offset, "events": page_events,
     }
 
 
-class CustomerUpdateRequest(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    address_line1: Optional[str] = None
-    address_line2: Optional[str] = None
-    city: Optional[str] = None
-    state_code: Optional[str] = None
-    postal_code: Optional[str] = None
-    country_code: Optional[str] = None
+class RecordUpdateRequest(BaseModel):
+    """Phase 4 (domain-agnostic) replacement for the old fixed-field
+    CustomerUpdateRequest. `updates` is attribute_key -> new value, for any
+    of the target domain's governance.domain_attributes -- validated against
+    that domain's active attribute set below rather than a hardcoded Pydantic
+    field list, so this Pydantic model needs no change to support a new
+    domain or a new attribute on an existing one."""
+    updates: dict = {}
 
 
-@app.put("/api/v1/customers/{golden_id}")
-def update_customer(golden_id: str, body: CustomerUpdateRequest, user: dict = Depends(auth_mod.require_gold_write)):
+@app.put("/api/v1/records/{domain_key}/{golden_id}")
+def update_record(domain_key: str, golden_id: str, body: RecordUpdateRequest,
+                   user: dict = Depends(auth_mod.require_domain_write)):
     """Submits a gold-record edit into the maker-checker workflow instead of
     applying it directly. It only takes effect once 2 different Data Owners
     (neither of them this maker) have both approved -- see
     _execute_gold_edit below and the 'gold_record_edit' workflow_type
     (governance.workflow_definitions: 1 step, approvals_required=2)."""
-    df = run_query("SELECT * FROM main_gold.gold_customers WHERE golden_id = ?", [golden_id])
+    _require_live_domain(domain_key)
+    df = run_query(
+        "SELECT * FROM main_gold.golden_records WHERE domain_key = ? AND golden_id = ?",
+        [domain_key, golden_id],
+    )
     if df.empty:
         raise HTTPException(404, f"No golden record found for {golden_id}")
 
-    if _golden_id_flagged_for_match_review(golden_id):
+    if _golden_id_flagged_for_match_review(domain_key, golden_id):
         raise HTTPException(
             409,
             f"{golden_id} is currently in the Match Review queue as a likely duplicate of "
             "another golden record and can't be edited until a data steward resolves it.",
         )
-
     if _golden_id_has_pending_edit(golden_id):
         raise HTTPException(
             409,
@@ -373,14 +532,22 @@ def update_customer(golden_id: str, body: CustomerUpdateRequest, user: dict = De
             "until that workflow is decided.",
         )
 
-    updates = {k: v for k, v in body.dict().items() if v is not None}
-    if not updates:
+    if not body.updates:
         return {"golden_id": golden_id, "status": "no_changes"}
+
+    valid_attrs = set(run_query(
+        "SELECT attribute_key FROM governance.domain_attributes WHERE domain_key = ? AND active",
+        [domain_key],
+    )["attribute_key"])
+    unknown = set(body.updates.keys()) - valid_attrs
+    if unknown:
+        raise HTTPException(400, f"Unknown attribute(s) for domain '{domain_key}': {', '.join(sorted(unknown))}")
 
     try:
         instance = wf_mod.start_workflow(
-            "gold_record_edit", entity_type="gold_customer", entity_id=golden_id, maker=user,
-            action_type="update", payload={"updates": updates, "old_snapshot": to_records(df)[0]},
+            "gold_record_edit", entity_type="golden_record", entity_id=golden_id, maker=user,
+            action_type="update",
+            payload={"domain_key": domain_key, "updates": body.updates, "old_snapshot": to_records(df)[0]},
         )
     except wf_mod.WorkflowError as e:
         raise _wf_error(e)
@@ -395,58 +562,91 @@ def update_customer(golden_id: str, body: CustomerUpdateRequest, user: dict = De
 
 def _execute_gold_edit(instance: dict, actor: dict) -> dict:
     """on_approved callback for 'gold_record_edit'. Applies the update the
-    maker proposed, attributing the audit-trail entry to the maker (not the
-    approvers) -- the maker made the edit; the Data Owners authorized it."""
+    maker proposed (merged into the record's attributes JSON), attributing
+    the audit-trail entry to the maker (not the approvers) -- the maker made
+    the edit; the Data Owners authorized it."""
     golden_id = instance["entity_id"]
+    domain_key = instance["payload"]["domain_key"]
     updates = instance["payload"]["updates"]
     old_snapshot = instance["payload"]["old_snapshot"]
 
-    set_clause = ", ".join(f"{col} = ?" for col in updates)
-    run_write(f"UPDATE main_gold.gold_customers SET {set_clause} WHERE golden_id = ?",
-              list(updates.values()) + [golden_id])
-    updated = run_query("SELECT * FROM main_gold.gold_customers WHERE golden_id = ?", [golden_id])
+    old_attrs = json.loads(old_snapshot["attributes"]) if old_snapshot.get("attributes") else {}
+    new_attrs = {**old_attrs, **updates}
+
+    run_write(
+        "UPDATE main_gold.golden_records SET attributes = ? WHERE domain_key = ? AND golden_id = ?",
+        [json.dumps(new_attrs), domain_key, golden_id],
+    )
+    updated = run_query(
+        "SELECT * FROM main_gold.golden_records WHERE domain_key = ? AND golden_id = ?",
+        [domain_key, golden_id],
+    )
     if updated.empty:
         return {"error": f"golden_id {golden_id} no longer exists (logically deleted since submission)"}
 
+    old_flat = dict(old_attrs)
+    old_flat["source_system_count"] = old_snapshot.get("source_system_count")
+    old_flat["survivor_source_system"] = old_snapshot.get("survivor_source_system")
+    old_flat["survivor_source_record_id"] = old_snapshot.get("survivor_source_record_id")
+    new_row = to_records(updated)[0]
+    new_flat = dict(new_attrs)
+    new_flat["source_system_count"] = new_row.get("source_system_count")
+    new_flat["survivor_source_system"] = new_row.get("survivor_source_system")
+    new_flat["survivor_source_record_id"] = new_row.get("survivor_source_record_id")
+
     audit_mod.log_update(
-        golden_id, old_record=old_snapshot, new_record=to_records(updated)[0],
+        golden_id, old_record=old_flat, new_record=new_flat,
         event_source="portal_manual_edit",
         changed_by=instance["maker_user_id"], changed_by_label=instance["maker_label"],
         change_reason="Manual edit via MDM Data Hub Portal, approved by 2 Data Owners",
     )
-    return {"action": "applied", "golden_id": golden_id, "updated_record": to_records(updated)[0]}
+    return {"action": "applied", "golden_id": golden_id, "updated_record": new_row}
 
 
 # ---------------------------------------------------------------------------
-# (c.1) Customer Portal Dashboard -- aggregate summary for the portal's
-# "Dashboard" landing screen. One pane (unlike Stewardship's two): every
-# breakdown is computed from the same 'enriched' gold_customers view used by
-# GET /api/v1/customers's filters above, so a dashboard chart's count and its
-# Browse Customers drill-through can never disagree. There's no per-user
-# "your activity" section here (gold_customers isn't a per-steward queue).
+# (c.1) Portal Dashboard -- aggregate summary for the portal's "Dashboard"
+# landing screen, for any domain. Every breakdown is computed from the same
+# 'enriched' golden_records view used by GET /api/v1/records/{domain_key}'s
+# filters above, so a dashboard chart's count and its Browse Records
+# drill-through can never disagree. There's no per-user "your activity"
+# section here (golden_records isn't a per-steward queue).
+#
+# Phase 4 (domain-agnostic): the old by_state/by_country breakdowns
+# (Customer-specific fields hardcoded in api/main.py) are replaced by a
+# generic loop over every governance.domain_attributes row flagged
+# is_dashboard_breakdown=true for this domain -- see that column's docstring
+# in scripts/ensure_domain_metadata.py. Customer flags state_code and
+# country_code (reproducing the old dashboard's exact two breakdowns); a
+# future domain enables its own by flagging different attributes, no code
+# change here.
 # ---------------------------------------------------------------------------
 
 _GEOGRAPHY_TOP_N = 12
 
 
-@app.get("/api/v1/portal/dashboard/customers-summary")
-def customers_dashboard_summary(user: dict = Depends(auth_mod.require_gold_read)):
-    total = int(run_query("SELECT COUNT(*) AS n FROM main_gold.gold_customers").iloc[0]["n"])
+@app.get("/api/v1/portal/dashboard/{domain_key}/summary")
+def records_dashboard_summary(domain_key: str, user: dict = Depends(auth_mod.require_domain_read)):
+    _require_live_domain(domain_key)
+    total = int(run_query(
+        "SELECT COUNT(*) AS n FROM main_gold.golden_records WHERE domain_key = ?", [domain_key]
+    ).iloc[0]["n"])
 
+    base_params = [domain_key, domain_key, domain_key, domain_key, domain_key]
     source_count_df = run_query(
-        _CUSTOMERS_ENRICHED_CTE +
-        "SELECT source_system_count, COUNT(*) AS n FROM enriched GROUP BY 1 ORDER BY 1"
+        _records_enriched_sql() +
+        "SELECT source_system_count, COUNT(*) AS n FROM enriched GROUP BY 1 ORDER BY 1", base_params,
     )
     tier_df = run_query(
-        _CUSTOMERS_ENRICHED_CTE +
-        "SELECT confidence_tier, COUNT(*) AS n FROM enriched GROUP BY 1"
+        _records_enriched_sql() +
+        "SELECT confidence_tier, COUNT(*) AS n FROM enriched GROUP BY 1", base_params,
     )
     survivor_df = run_query(
-        "SELECT survivor_source_system, COUNT(*) AS n FROM main_gold.gold_customers GROUP BY 1 ORDER BY 1"
+        "SELECT survivor_source_system, COUNT(*) AS n FROM main_gold.golden_records "
+        "WHERE domain_key = ? GROUP BY 1 ORDER BY 1", [domain_key],
     )
     pending_df = run_query(
-        _CUSTOMERS_ENRICHED_CTE +
-        "SELECT pending_approval, COUNT(*) AS n FROM enriched GROUP BY 1"
+        _records_enriched_sql() +
+        "SELECT pending_approval, COUNT(*) AS n FROM enriched GROUP BY 1", base_params,
     )
 
     def top_n_with_other(df, col):
@@ -458,22 +658,28 @@ def customers_dashboard_summary(user: dict = Depends(auth_mod.require_gold_read)
             rows.append({"label": "Other", "count": int(rest["n"].sum())})
         return rows
 
-    state_df = run_query("""
-        SELECT COALESCE(state_code, '(unknown)') AS state_code, COUNT(*) AS n
-        FROM main_gold.gold_customers GROUP BY 1
-    """)
-    country_df = run_query("""
-        SELECT COALESCE(country_code, '(unknown)') AS country_code, COUNT(*) AS n
-        FROM main_gold.gold_customers GROUP BY 1
-    """)
+    breakdown_attrs = run_query(
+        "SELECT attribute_key, display_label FROM governance.domain_attributes "
+        "WHERE domain_key = ? AND active AND is_dashboard_breakdown ORDER BY sort_order",
+        [domain_key],
+    )
+    breakdowns = {}
+    for _, attr in breakdown_attrs.iterrows():
+        key = attr["attribute_key"]
+        bdf = run_query(f"""
+            SELECT COALESCE(attributes->>'{key}', '(unknown)') AS v, COUNT(*) AS n
+            FROM main_gold.golden_records WHERE domain_key = ? GROUP BY 1
+        """, [domain_key])
+        breakdowns[key] = {"label": attr["display_label"], "values": top_n_with_other(bdf, "v")}
 
     trend_df = run_query("""
-        SELECT CAST(event_ts AS DATE) AS d, event_type, COUNT(*) AS n
-        FROM audit.audit_trail
-        WHERE event_type IN ('created', 'updated', 'logically_deleted')
+        SELECT CAST(t.event_ts AS DATE) AS d, t.event_type, COUNT(*) AS n
+        FROM audit.audit_trail t
+        JOIN main_gold.golden_records gr ON gr.golden_id = t.golden_id AND gr.domain_key = ?
+        WHERE t.event_type IN ('created', 'updated', 'logically_deleted')
         GROUP BY 1, 2
         ORDER BY 1
-    """)
+    """, [domain_key])
     trend = {}
     for r in trend_df.itertuples():
         d = str(r.d)
@@ -484,6 +690,7 @@ def customers_dashboard_summary(user: dict = Depends(auth_mod.require_gold_read)
     pending_counts = {bool(r.pending_approval): int(r.n) for r in pending_df.itertuples()}
 
     return {
+        "domain_key": domain_key,
         "total": total,
         "by_source_count": [{"source_system_count": int(r.source_system_count), "count": int(r.n)} for r in source_count_df.itertuples()],
         "by_confidence_tier": [
@@ -492,8 +699,7 @@ def customers_dashboard_summary(user: dict = Depends(auth_mod.require_gold_read)
             {"tier": "tier2", "count": tier_counts.get("tier2", 0)},
         ],
         "by_survivor_source": [{"source_system": r.survivor_source_system, "count": int(r.n)} for r in survivor_df.itertuples()],
-        "by_state": top_n_with_other(state_df, "state_code"),
-        "by_country": top_n_with_other(country_df, "country_code"),
+        "breakdowns": breakdowns,
         "pending_approval": {
             "pending": pending_counts.get(True, 0),
             "not_pending": pending_counts.get(False, 0),
@@ -503,7 +709,8 @@ def customers_dashboard_summary(user: dict = Depends(auth_mod.require_gold_read)
 
 
 # ---------------------------------------------------------------------------
-# (d) Lineage and impact analysis
+# (d) Lineage and impact analysis. Already domain-agnostic (see
+# api/lineage.py's Phase 4 rewrite) -- no changes needed here.
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/lineage/impact")
@@ -547,7 +754,20 @@ def lineage_graph(user: dict = Depends(auth_mod.get_current_user)):
 
 
 # ---------------------------------------------------------------------------
-# (c) Data Stewardship app backend, with AI-assisted remediation
+# (c) Data Stewardship app backend, with AI-assisted remediation.
+#
+# Phase 4 (domain-agnostic) known simplification: the Exception Queue and
+# Match Review consoles below remain role-gated (dataSteward/dataOwner)
+# rather than per-domain-access-gated like the Records API and Portal
+# Dashboard above -- a steward's remit is inherently cross-domain in most
+# real MDM platforms, and this pass only has one live domain to exercise
+# access control against anyway (see GET /api/v1/records/{domain_key} and
+# the Portal Dashboard for where the "customer-only user can't reach the
+# product domain" boundary actually lives). Every response here does carry
+# domain_key (exceptions_queue/gold_match_review_queue both have it since
+# Phase 2/3), and an optional `domain_key` filter is exposed below for a
+# steward who wants to narrow to one domain -- but nothing here restricts
+# *which* domains a steward can see, unlike the Records API.
 # ---------------------------------------------------------------------------
 
 _ACTIVITY_TO_WORKFLOW_STATUS = {
@@ -581,6 +801,7 @@ def get_queue(
     status: str = "open",
     reason: Optional[str] = None,
     activity: Optional[str] = None,
+    domain_key: Optional[str] = None,
     limit: int = 10,
     offset: int = 0,
     user: dict = Depends(auth_mod.require_steward_or_owner),
@@ -591,49 +812,54 @@ def get_queue(
     deliberately ignoring status -- the dashboard's by-reason chart counts
     are computed across the whole queue, not just open items), or an
     'activity' slice scoped to the logged-in user's own maker-checker
-    submissions (governance.workflow_instances.maker_user_id). limit/offset
-    paginate whichever of these result sets was selected; 'count'/'total'
-    in the response always reflect the full filtered set, not just the page."""
+    submissions (governance.workflow_instances.maker_user_id). `domain_key`
+    optionally narrows any of these to one domain. limit/offset paginate
+    whichever of these result sets was selected; 'count'/'total' in the
+    response always reflect the full filtered set, not just the page."""
+    domain_clause = " AND eq.domain_key = ?" if domain_key else ""
+    domain_param = [domain_key] if domain_key else []
+
     if activity:
         if activity not in _ACTIVITY_TO_WORKFLOW_STATUS:
             raise HTTPException(400, f"Unknown activity '{activity}'")
         wf_status = _ACTIVITY_TO_WORKFLOW_STATUS[activity]
         if wf_status is None:
-            df = run_query(_EXCEPTIONS_BASE_SELECT + """
+            df = run_query(_EXCEPTIONS_BASE_SELECT + f"""
                 WHERE eq.exception_id IN (
                     SELECT entity_id FROM governance.workflow_instances
                     WHERE workflow_type = 'stewardship_remediation' AND maker_user_id = ?
-                )
+                ){domain_clause}
                 ORDER BY eq.queued_ts
-            """, [user["user_id"]])
+            """, [user["user_id"]] + domain_param)
         else:
-            df = run_query(_EXCEPTIONS_BASE_SELECT + """
+            df = run_query(_EXCEPTIONS_BASE_SELECT + f"""
                 WHERE eq.exception_id IN (
                     SELECT entity_id FROM governance.workflow_instances
                     WHERE workflow_type = 'stewardship_remediation' AND maker_user_id = ? AND status = ?
-                )
+                ){domain_clause}
                 ORDER BY eq.queued_ts
-            """, [user["user_id"], wf_status])
+            """, [user["user_id"], wf_status] + domain_param)
         return {"status_filter": None, "reason_filter": None, "activity_filter": activity,
-                **_paginate_df(df, limit, offset)}
+                "domain_filter": domain_key, **_paginate_df(df, limit, offset)}
 
     if reason:
-        df = run_query(_EXCEPTIONS_BASE_SELECT + """
-            WHERE list_contains(eq.reject_reasons, ?)
+        df = run_query(_EXCEPTIONS_BASE_SELECT + f"""
+            WHERE list_contains(eq.reject_reasons, ?){domain_clause}
             ORDER BY eq.queued_ts
-        """, [reason])
+        """, [reason] + domain_param)
         return {"status_filter": None, "reason_filter": reason, "activity_filter": None,
-                **_paginate_df(df, limit, offset)}
+                "domain_filter": domain_key, **_paginate_df(df, limit, offset)}
 
     if status == "all":
-        df = run_query(_EXCEPTIONS_BASE_SELECT + " ORDER BY eq.queued_ts")
+        df = run_query(_EXCEPTIONS_BASE_SELECT + (f" WHERE eq.domain_key = ?" if domain_key else "")
+                        + " ORDER BY eq.queued_ts", domain_param)
     else:
-        df = run_query(_EXCEPTIONS_BASE_SELECT + """
-            WHERE COALESCE(o.remediation_status, eq.remediation_status) = ?
+        df = run_query(_EXCEPTIONS_BASE_SELECT + f"""
+            WHERE COALESCE(o.remediation_status, eq.remediation_status) = ?{domain_clause}
             ORDER BY eq.queued_ts
-        """, [status])
+        """, [status] + domain_param)
     return {"status_filter": status, "reason_filter": None, "activity_filter": None,
-            **_paginate_df(df, limit, offset)}
+            "domain_filter": domain_key, **_paginate_df(df, limit, offset)}
 
 
 @app.get("/api/v1/stewardship/queue/{exception_id}")
@@ -649,10 +875,14 @@ def suggest(exception_id: str, user: dict = Depends(auth_mod.require_steward_or_
     df = run_query("SELECT * FROM main_silver.exceptions_queue WHERE exception_id = ?", [exception_id])
     if df.empty:
         raise HTTPException(404, "Exception not found")
-    record = to_records(df)[0]
-    reject_reasons = list(record.get("reject_reasons") or [])
+    row = to_records(df)[0]
+    domain_key = row["domain_key"]
+    attrs = json.loads(row["attributes"]) if row.get("attributes") else {}
+    record = {**attrs, "source_system": row["source_system"], "source_record_id": row["source_record_id"]}
+    reject_reasons = list(row.get("reject_reasons") or [])
 
-    suggestion = suggest_remediation(record, reject_reasons)
+    domain = _require_known_domain(domain_key)
+    suggestion = suggest_remediation(record, reject_reasons, domain_key, domain["entity_label_singular"])
 
     run_write("""
         INSERT INTO stewardship.remediation_log
@@ -679,15 +909,19 @@ def resolve(exception_id: str, body: ResolveRequest, user: dict = Depends(auth_m
     df = run_query("SELECT * FROM main_silver.exceptions_queue WHERE exception_id = ?", [exception_id])
     if df.empty:
         raise HTTPException(404, "Exception not found")
-    record = to_records(df)[0]
+    row = to_records(df)[0]
+    domain_key = row["domain_key"]
+    attrs = json.loads(row["attributes"]) if row.get("attributes") else {}
+    record = {**attrs, "source_system": row["source_system"], "source_record_id": row["source_record_id"]}
     merged = {**record, **body.applied_fields}
 
     # Re-check the corrected record against the same reject-severity rules that
-    # routed it here in the first place (column_rules.csv). Only a record that
-    # now genuinely passes validation is allowed to be submitted for approval --
-    # otherwise it stays in the queue (still 'open') and the steward is told
-    # exactly what's still failing, instead of silently trusting the click.
-    still_failing = validate_record(merged)
+    # routed it here in the first place (bus_rules.column_rules). Only a record
+    # that now genuinely passes validation is allowed to be submitted for
+    # approval -- otherwise it stays in the queue (still 'open') and the
+    # steward is told exactly what's still failing, instead of silently
+    # trusting the click.
+    still_failing = validate_record(domain_key, merged)
     if still_failing:
         run_write("""
             INSERT INTO stewardship.remediation_log
@@ -715,7 +949,7 @@ def resolve(exception_id: str, body: ResolveRequest, user: dict = Depends(auth_m
     try:
         instance = wf_mod.start_workflow(
             "stewardship_remediation", entity_type="exception", entity_id=exception_id, maker=user,
-            action_type="resolve", payload={"merged": merged, "applied_fields": body.applied_fields},
+            action_type="resolve", payload={"domain_key": domain_key, "merged": merged, "applied_fields": body.applied_fields},
         )
     except wf_mod.WorkflowError as e:
         raise _wf_error(e)
@@ -736,19 +970,17 @@ def _execute_stewardship_resolve(instance: dict, actor: dict) -> dict:
     original maker (the steward who actually made the correction), not the
     Data Owner who approved it."""
     exception_id = instance["entity_id"]
+    domain_key = instance["payload"]["domain_key"]
     merged = instance["payload"]["merged"]
     applied_fields = instance["payload"]["applied_fields"]
     maker = {"user_id": instance["maker_user_id"], "full_name": instance["maker_label"]}
 
+    stored_attrs = {k: v for k, v in merged.items() if k not in ("source_system", "source_record_id")}
     run_write("""
         INSERT OR REPLACE INTO stewardship.remediated_records
-            (exception_id, source_system, source_record_id, first_name, last_name, email, phone,
-             address_line1, address_line2, city, state_code, postal_code, country_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [exception_id, merged["source_system"], merged["source_record_id"],
-          merged.get("first_name"), merged.get("last_name"), merged.get("email"), merged.get("phone"),
-          merged.get("address_line1"), merged.get("address_line2"), merged.get("city"),
-          merged.get("state_code"), merged.get("postal_code"), merged.get("country_code")])
+            (exception_id, domain_key, source_system, source_record_id, attributes)
+        VALUES (?, ?, ?, ?, ?)
+    """, [exception_id, domain_key, merged["source_system"], merged["source_record_id"], json.dumps(stored_attrs)])
 
     run_write("""
         INSERT INTO stewardship.remediation_log
@@ -761,7 +993,7 @@ def _execute_stewardship_resolve(instance: dict, actor: dict) -> dict:
         VALUES (?, 'resolved')
     """, [exception_id])
 
-    reprocess_result = reprocess_corrected_record(merged, actor=maker)
+    reprocess_result = reprocess_corrected_record(domain_key, merged, actor=maker)
     return {"action": "resolved", "reprocessing": reprocess_result}
 
 
@@ -793,7 +1025,7 @@ def reject(exception_id: str, body: RejectRequest, user: dict = Depends(auth_mod
     'stewardship_remediation' workflow as resolve() (action_type='reject')
     -- a Data Owner has to sign off on excluding a record from the pipeline
     too, not just on correcting one."""
-    df = run_query("SELECT * FROM main_silver.exceptions_queue WHERE exception_id = ?", [exception_id])
+    df = run_query("SELECT exception_id FROM main_silver.exceptions_queue WHERE exception_id = ?", [exception_id])
     if df.empty:
         raise HTTPException(404, "Exception not found")
 
@@ -854,16 +1086,17 @@ def _dispatch_stewardship_remediation(instance: dict, actor: dict) -> dict:
 # ---------------------------------------------------------------------------
 # (d) Match Review queue -- borderline fuzzy-match pairs from the gold layer's
 # embedding-similarity tier (scripts/generate_matches.py) that were not
-# auto-merged. A data steward confirms ("same customer, merge them") or
+# auto-merged. A data steward confirms ("same record, merge them") or
 # rejects ("coincidence, keep separate"). Same role gating as the exception
-# queue: dataSteward/dataOwner only, admin deliberately excluded.
+# queue: dataSteward/dataOwner only, admin deliberately excluded. Same
+# cross-domain-console known simplification as the exceptions queue above.
 #
 # A confirm decision, once approved through the full maker-checker chain,
 # now auto-processes in real time (reprocessing.reprocess_confirmed_match_review):
 # attribute-level survivorship is re-run across the full group of source
 # records already contributing to either side's golden record, the smaller
 # of the two golden_ids survives, and the other is retired (deleted from
-# main_gold.gold_customers, logged to the audit trail as 'logically_deleted')
+# main_gold.golden_records, logged to the audit trail as 'logically_deleted')
 # rather than waiting for the next full pipeline rebuild. A reject decision
 # still has nothing to reprocess -- rejecting never changes gold, in real
 # time or in batch, it only excludes the pair from future matching runs.
@@ -879,17 +1112,20 @@ _MATCH_REVIEW_BASE_SELECT = """
 """
 
 
-def _match_similarity_bucket_bounds():
+def _match_similarity_bucket_bounds(domain_key: Optional[str] = None):
     """Live Tier 2 fuzzy-match thresholds (bus_rules.matching_thresholds is
     editable at runtime via the Rules Configuration workflow), split into 3
     equal-width buckets between review_lower_threshold and auto_merge_threshold.
     Shared by the dashboard summary endpoint and the similarity_bucket filter
-    below so the two never drift apart."""
+    below so the two never drift apart. domain_key defaults to 'customer'
+    (the only live domain today) when not given -- callers that already know
+    the domain should always pass it."""
+    domain_key = domain_key or "customer"
     thr_df = run_query("""
         SELECT review_lower_threshold, auto_merge_threshold
         FROM bus_rules.matching_thresholds
-        WHERE tier_id = 'MT002'
-    """)
+        WHERE domain_key = ? AND active AND is_match_tier AND match_method = 'fuzzy_tfidf_cosine'
+    """, [domain_key])
     if thr_df.empty:
         low, high = 0.35, 0.80
     else:
@@ -904,6 +1140,7 @@ def get_match_review_queue(
     status: str = "pending",
     similarity_bucket: Optional[int] = None,
     activity: Optional[str] = None,
+    domain_key: Optional[str] = None,
     limit: int = 10,
     offset: int = 0,
     user: dict = Depends(auth_mod.require_steward_or_owner),
@@ -913,60 +1150,60 @@ def get_match_review_queue(
     similarity-score bucket (0/1/2, deliberately ignoring status -- the
     dashboard's bucket chart counts every pair regardless of status), or an
     'activity' slice scoped to the logged-in user's own maker-checker
-    submissions. limit/offset paginate whichever of these result sets was
-    selected; 'count'/'total' in the response always reflect the full
-    filtered set, not just the page."""
+    submissions. `domain_key` optionally narrows any of these to one domain.
+    limit/offset paginate whichever of these result sets was selected;
+    'count'/'total' in the response always reflect the full filtered set,
+    not just the page."""
+    domain_clause = " AND q.domain_key = ?" if domain_key else ""
+    domain_param = [domain_key] if domain_key else []
+
     if activity:
         if activity not in _ACTIVITY_TO_WORKFLOW_STATUS:
             raise HTTPException(400, f"Unknown activity '{activity}'")
         wf_status = _ACTIVITY_TO_WORKFLOW_STATUS[activity]
         if wf_status is None:
-            df = run_query(_MATCH_REVIEW_BASE_SELECT + """
+            df = run_query(_MATCH_REVIEW_BASE_SELECT + f"""
                 WHERE q.pair_id IN (
                     SELECT entity_id FROM governance.workflow_instances
                     WHERE workflow_type = 'match_review_confirmation' AND maker_user_id = ?
-                )
+                ){domain_clause}
                 ORDER BY q.queued_ts
-            """, [user["user_id"]])
+            """, [user["user_id"]] + domain_param)
         else:
-            df = run_query(_MATCH_REVIEW_BASE_SELECT + """
+            df = run_query(_MATCH_REVIEW_BASE_SELECT + f"""
                 WHERE q.pair_id IN (
                     SELECT entity_id FROM governance.workflow_instances
                     WHERE workflow_type = 'match_review_confirmation' AND maker_user_id = ? AND status = ?
-                )
+                ){domain_clause}
                 ORDER BY q.queued_ts
-            """, [user["user_id"], wf_status])
+            """, [user["user_id"], wf_status] + domain_param)
         return {"status_filter": None, "bucket_filter": None, "activity_filter": activity,
-                **_paginate_df(df, limit, offset)}
+                "domain_filter": domain_key, **_paginate_df(df, limit, offset)}
 
     if similarity_bucket is not None:
         if similarity_bucket not in (0, 1, 2):
             raise HTTPException(400, "similarity_bucket must be 0, 1, or 2")
-        low, high, third = _match_similarity_bucket_bounds()
+        low, high, third = _match_similarity_bucket_bounds(domain_key)
         bounds = [(low, low + third), (low + third, low + 2 * third), (low + 2 * third, high)]
         lo, hi = bounds[similarity_bucket]
-        if similarity_bucket == 2:
-            df = run_query(_MATCH_REVIEW_BASE_SELECT + """
-                WHERE q.similarity_score >= ? AND q.similarity_score <= ?
-                ORDER BY q.queued_ts
-            """, [lo, hi])
-        else:
-            df = run_query(_MATCH_REVIEW_BASE_SELECT + """
-                WHERE q.similarity_score >= ? AND q.similarity_score < ?
-                ORDER BY q.queued_ts
-            """, [lo, hi])
+        cmp_hi = "<=" if similarity_bucket == 2 else "<"
+        df = run_query(_MATCH_REVIEW_BASE_SELECT + f"""
+            WHERE q.similarity_score >= ? AND q.similarity_score {cmp_hi} ?{domain_clause}
+            ORDER BY q.queued_ts
+        """, [lo, hi] + domain_param)
         return {"status_filter": None, "bucket_filter": similarity_bucket, "activity_filter": None,
-                **_paginate_df(df, limit, offset)}
+                "domain_filter": domain_key, **_paginate_df(df, limit, offset)}
 
     if status == "all":
-        df = run_query(_MATCH_REVIEW_BASE_SELECT + " ORDER BY q.queued_ts")
+        df = run_query(_MATCH_REVIEW_BASE_SELECT + (" WHERE q.domain_key = ?" if domain_key else "")
+                        + " ORDER BY q.queued_ts", domain_param)
     else:
-        df = run_query(_MATCH_REVIEW_BASE_SELECT + """
-            WHERE COALESCE(o.status, q.review_status) = ?
+        df = run_query(_MATCH_REVIEW_BASE_SELECT + f"""
+            WHERE COALESCE(o.status, q.review_status) = ?{domain_clause}
             ORDER BY q.queued_ts
-        """, [status])
+        """, [status] + domain_param)
     return {"status_filter": status, "bucket_filter": None, "activity_filter": None,
-            **_paginate_df(df, limit, offset)}
+            "domain_filter": domain_key, **_paginate_df(df, limit, offset)}
 
 
 @app.get("/api/v1/stewardship/match-review/{pair_id}")
@@ -1106,7 +1343,9 @@ def _rollback_match_review_submission(instance: dict, actor: dict) -> dict:
 # assigned to individual stewards) plus a "your_activity" slice scoped to the
 # logged-in user, built from the only per-user attribution that exists for
 # these entities: maker_user_id on the workflow instance they submitted
-# (governance.workflow_instances), not the queue snapshot itself.
+# (governance.workflow_instances), not the queue snapshot itself. An
+# optional `domain_key` narrows either dashboard to one domain -- same
+# cross-domain-console posture as the two queues above.
 # ---------------------------------------------------------------------------
 
 def _my_workflow_activity(workflow_type: str, user_id: str) -> dict:
@@ -1130,34 +1369,47 @@ def _my_workflow_activity(workflow_type: str, user_id: str) -> dict:
 
 
 @app.get("/api/v1/stewardship/dashboard/exceptions-summary")
-def exceptions_dashboard_summary(user: dict = Depends(auth_mod.require_steward_or_owner)):
-    status_df = run_query("""
+def exceptions_dashboard_summary(domain_key: Optional[str] = None,
+                                  user: dict = Depends(auth_mod.require_steward_or_owner)):
+    domain_clause = " WHERE eq.domain_key = ?" if domain_key else ""
+    domain_param = [domain_key] if domain_key else []
+    status_df = run_query(f"""
         SELECT COALESCE(o.remediation_status, eq.remediation_status) AS status, COUNT(*) AS n
         FROM main_silver.exceptions_queue eq
         LEFT JOIN stewardship.exception_status_overrides o
           ON o.exception_id = eq.exception_id
+        {domain_clause}
         GROUP BY 1
         ORDER BY 1
-    """)
-    reason_df = run_query("""
+    """, domain_param)
+    reason_df = run_query(f"""
         SELECT reason, COUNT(*) AS n
-        FROM (SELECT UNNEST(reject_reasons) AS reason FROM main_silver.exceptions_queue)
+        FROM (SELECT UNNEST(reject_reasons) AS reason FROM main_silver.exceptions_queue eq {domain_clause})
         GROUP BY 1
         ORDER BY n DESC
-    """)
-    created_df = run_query("""
+    """, domain_param)
+    created_df = run_query(f"""
         SELECT CAST(queued_ts AS DATE) AS d, COUNT(*) AS n
-        FROM main_silver.exceptions_queue
+        FROM main_silver.exceptions_queue eq
+        {domain_clause}
         GROUP BY 1
         ORDER BY 1
-    """)
-    resolved_df = run_query("""
-        SELECT CAST(updated_ts AS DATE) AS d, remediation_status AS status, COUNT(*) AS n
-        FROM stewardship.exception_status_overrides
-        WHERE remediation_status IN ('resolved', 'rejected')
+    """, domain_param)
+    resolved_domain_clause = (
+        " AND eq.exception_id = o.exception_id AND eq.domain_key = ?"
+        if domain_key else ""
+    )
+    resolved_from = (
+        "stewardship.exception_status_overrides o, main_silver.exceptions_queue eq"
+        if domain_key else "stewardship.exception_status_overrides o"
+    )
+    resolved_df = run_query(f"""
+        SELECT CAST(o.updated_ts AS DATE) AS d, o.remediation_status AS status, COUNT(*) AS n
+        FROM {resolved_from}
+        WHERE o.remediation_status IN ('resolved', 'rejected'){resolved_domain_clause}
         GROUP BY 1, 2
         ORDER BY 1
-    """)
+    """, domain_param)
 
     trend = {}
     for r in created_df.itertuples():
@@ -1171,6 +1423,7 @@ def exceptions_dashboard_summary(user: dict = Depends(auth_mod.require_steward_o
 
     total = int(status_df["n"].sum()) if not status_df.empty else 0
     return {
+        "domain_filter": domain_key,
         "total": total,
         "by_status": [{"status": r.status, "count": int(r.n)} for r in status_df.itertuples()],
         "by_reason": [{"reason": r.reason, "count": int(r.n)} for r in reason_df.itertuples()],
@@ -1180,23 +1433,29 @@ def exceptions_dashboard_summary(user: dict = Depends(auth_mod.require_steward_o
 
 
 @app.get("/api/v1/stewardship/dashboard/match-review-summary")
-def match_review_dashboard_summary(user: dict = Depends(auth_mod.require_steward_or_owner)):
-    status_df = run_query("""
+def match_review_dashboard_summary(domain_key: Optional[str] = None,
+                                    user: dict = Depends(auth_mod.require_steward_or_owner)):
+    domain_clause = " WHERE q.domain_key = ?" if domain_key else ""
+    domain_param = [domain_key] if domain_key else []
+    status_df = run_query(f"""
         SELECT COALESCE(o.status, q.review_status) AS status, COUNT(*) AS n
         FROM main_gold.gold_match_review_queue q
         LEFT JOIN stewardship.match_review_overrides o
           ON o.pair_id = q.pair_id
+        {domain_clause}
         GROUP BY 1
         ORDER BY 1
-    """)
+    """, domain_param)
     total = int(status_df["n"].sum()) if not status_df.empty else 0
 
     # Bucket similarity scores against the *live* Tier 2 thresholds -- shared
     # with the similarity_bucket filter on GET /stewardship/match-review so a
     # dashboard bar's count and its drill-through list can never disagree.
-    low, high, third = _match_similarity_bucket_bounds()
+    low, high, third = _match_similarity_bucket_bounds(domain_key)
 
-    scores_df = run_query("SELECT similarity_score FROM main_gold.gold_match_review_queue")
+    scores_df = run_query(
+        f"SELECT similarity_score FROM main_gold.gold_match_review_queue q {domain_clause}", domain_param
+    )
     buckets = [
         {"bucket_index": 0, "range": f"{low:.2f}–{low + third:.2f}", "count": 0},
         {"bucket_index": 1, "range": f"{low + third:.2f}–{low + 2 * third:.2f}", "count": 0},
@@ -1212,6 +1471,7 @@ def match_review_dashboard_summary(user: dict = Depends(auth_mod.require_steward
             buckets[2]["count"] += 1
 
     return {
+        "domain_filter": domain_key,
         "total": total,
         "by_status": [{"status": r.status, "count": int(r.n)} for r in status_df.itertuples()],
         "similarity_buckets": buckets,
@@ -1240,13 +1500,99 @@ def list_users(limit: int = 10, offset: int = 0, admin: dict = Depends(auth_mod.
 
 
 VALID_ROLES = ("admin", "dataSteward", "dataOwner", "businessUser")
+VALID_DOMAIN_ACCESS_LEVELS = ("read_write", "read", "none")
+
+
+@app.get("/api/v1/admin/users/{user_id}/domain-access")
+def get_user_domain_access(user_id: str, admin: dict = Depends(auth_mod.require_admin)):
+    """Phase 4 (domain-agnostic): a user's real per-domain access now lives in
+    governance.user_domain_access (one row per domain they have any access
+    to), not the single legacy auth.users.gold_access column -- see
+    api/auth.py's domain_access_level docstring. Returns every active domain
+    with this user's current level ('none' if no row exists)."""
+    existing = run_query("SELECT user_id FROM auth.users WHERE user_id = ?", [user_id])
+    if existing.empty:
+        raise HTTPException(404, "User not found")
+    domains = to_records(run_query(
+        "SELECT domain_key, display_name FROM governance.domain_registry WHERE is_active ORDER BY sort_order"
+    ))
+    access = run_query(
+        "SELECT domain_key, gold_access FROM governance.user_domain_access WHERE user_id = ?", [user_id]
+    )
+    access_by_domain = dict(zip(access["domain_key"], access["gold_access"])) if not access.empty else {}
+    for d in domains:
+        d["gold_access"] = access_by_domain.get(d["domain_key"], "none")
+    return {"user_id": user_id, "domain_access": domains}
+
+
+class DomainAccessUpdateRequest(BaseModel):
+    domain_access: dict = {}   # domain_key -> 'read_write' | 'read' | 'none'
+
+
+@app.put("/api/v1/admin/users/{user_id}/domain-access")
+def update_user_domain_access(user_id: str, body: DomainAccessUpdateRequest,
+                               admin: dict = Depends(auth_mod.require_admin)):
+    """Submits a per-domain access change into the 'user_admin_change'
+    maker-checker workflow (action_type='domain_access_update') -- granting
+    or revoking gold-layer access to a domain is exactly the kind of
+    sensitive change role/gold_access updates already require a second
+    Admin's sign-off for (see update_user below)."""
+    existing = run_query("SELECT user_id FROM auth.users WHERE user_id = ?", [user_id])
+    if existing.empty:
+        raise HTTPException(404, "User not found")
+    if not body.domain_access:
+        return {"user_id": user_id, "status": "no_changes"}
+
+    known_domains = set(run_query("SELECT domain_key FROM governance.domain_registry WHERE is_active")["domain_key"])
+    unknown_domains = set(body.domain_access.keys()) - known_domains
+    if unknown_domains:
+        raise HTTPException(400, f"Unknown domain(s): {', '.join(sorted(unknown_domains))}")
+    bad_levels = {k: v for k, v in body.domain_access.items() if v not in VALID_DOMAIN_ACCESS_LEVELS}
+    if bad_levels:
+        raise HTTPException(400, f"gold_access must be one of: {', '.join(VALID_DOMAIN_ACCESS_LEVELS)}")
+
+    try:
+        instance = wf_mod.start_workflow(
+            "user_admin_change", entity_type="user", entity_id=user_id, maker=admin,
+            action_type="domain_access_update", payload={"domain_access": body.domain_access},
+        )
+    except wf_mod.WorkflowError as e:
+        raise _wf_error(e)
+
+    return {
+        "user_id": user_id,
+        "status": "pending_approval",
+        "workflow_instance_id": instance["instance_id"],
+        "steps": instance["steps"],
+    }
+
+
+def _execute_user_domain_access_update(instance: dict, actor: dict) -> dict:
+    """on_approved callback for 'user_admin_change' (action_type='domain_access_update')."""
+    user_id = instance["entity_id"]
+    domain_access = instance["payload"]["domain_access"]
+    existing = run_query("SELECT user_id FROM auth.users WHERE user_id = ?", [user_id])
+    if existing.empty:
+        return {"error": f"user_id {user_id} no longer exists"}
+    for domain_key, level in domain_access.items():
+        run_write("""
+            INSERT INTO governance.user_domain_access (user_id, domain_key, gold_access, updated_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (user_id, domain_key) DO UPDATE SET
+                gold_access = excluded.gold_access, updated_ts = now(), updated_by = excluded.updated_by
+        """, [user_id, domain_key, level, actor.get("user_id")])
+    updated = to_records(run_query(
+        "SELECT domain_key, gold_access FROM governance.user_domain_access WHERE user_id = ?", [user_id]
+    ))
+    return {"action": "domain_access_updated", "user_id": user_id, "domain_access": updated}
 
 
 class CreateUserRequest(BaseModel):
     username: str
     full_name: str
-    role: str          # 'admin' | 'dataSteward' | 'dataOwner' | 'businessUser'
-    gold_access: str   # 'read_write' | 'read' | 'none'
+    role: str                    # 'admin' | 'dataSteward' | 'dataOwner' | 'businessUser'
+    gold_access: str = "none"    # legacy global fallback -- see auth_mod.require_gold_read/write
+    domain_access: dict = {}     # domain_key -> 'read_write' | 'read' | 'none' (the real per-domain grant)
 
 
 @app.post("/api/v1/admin/users")
@@ -1258,8 +1604,12 @@ def create_user_endpoint(body: CreateUserRequest, admin: dict = Depends(auth_mod
     _execute_user_create below."""
     if body.role not in VALID_ROLES:
         raise HTTPException(400, f"role must be one of: {', '.join(VALID_ROLES)}")
-    if body.gold_access not in ("read_write", "read", "none"):
-        raise HTTPException(400, "gold_access must be one of: read_write, read, none")
+    if body.gold_access not in VALID_DOMAIN_ACCESS_LEVELS:
+        raise HTTPException(400, f"gold_access must be one of: {', '.join(VALID_DOMAIN_ACCESS_LEVELS)}")
+    known_domains = set(run_query("SELECT domain_key FROM governance.domain_registry WHERE is_active")["domain_key"])
+    unknown_domains = set(body.domain_access.keys()) - known_domains
+    if unknown_domains:
+        raise HTTPException(400, f"Unknown domain(s): {', '.join(sorted(unknown_domains))}")
 
     existing = run_query("SELECT user_id FROM auth.users WHERE username = ?", [body.username])
     if not existing.empty:
@@ -1270,7 +1620,8 @@ def create_user_endpoint(body: CreateUserRequest, admin: dict = Depends(auth_mod
             "user_admin_change", entity_type="user", entity_id=f"new:{body.username}", maker=admin,
             action_type="create",
             payload={"username": body.username, "full_name": body.full_name,
-                     "role": body.role, "gold_access": body.gold_access},
+                     "role": body.role, "gold_access": body.gold_access,
+                     "domain_access": body.domain_access},
         )
     except wf_mod.WorkflowError as e:
         raise _wf_error(e)
@@ -1291,6 +1642,13 @@ def _execute_user_create(instance: dict, actor: dict) -> dict:
         result = auth_mod.create_user(p["username"], p["full_name"], p["role"], p["gold_access"])
     except ValueError as e:
         return {"error": str(e)}
+    for domain_key, level in (p.get("domain_access") or {}).items():
+        run_write("""
+            INSERT INTO governance.user_domain_access (user_id, domain_key, gold_access, updated_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (user_id, domain_key) DO UPDATE SET
+                gold_access = excluded.gold_access, updated_ts = now(), updated_by = excluded.updated_by
+        """, [result["user_id"], domain_key, level, actor.get("user_id")])
     return {"action": "created", **result}  # includes the one-time temp_password
 
 
@@ -1309,7 +1667,10 @@ def update_user(user_id: str, body: UpdateUserRequest, admin: dict = Depends(aut
     """Non-sensitive changes (full_name only) apply immediately. Any change
     touching role, gold_access, or is_active -- the fields that actually grant
     or remove access -- is instead submitted into the 'user_admin_change'
-    maker-checker workflow (1 Admin, different from whoever requested it)."""
+    maker-checker workflow (1 Admin, different from whoever requested it).
+    gold_access here is the legacy global fallback column (see
+    auth_mod.require_gold_read/write's docstrings) -- use PUT
+    /api/v1/admin/users/{user_id}/domain-access for real per-domain grants."""
     existing = run_query("SELECT * FROM auth.users WHERE user_id = ?", [user_id])
     if existing.empty:
         raise HTTPException(404, "User not found")
@@ -1362,12 +1723,15 @@ def _execute_user_update(instance: dict, actor: dict) -> dict:
 
 
 def _dispatch_user_admin_change(instance: dict, actor: dict) -> dict:
-    """The 'user_admin_change' workflow_type covers both create and update
-    actions sharing one approval chain; picks the right executor."""
+    """The 'user_admin_change' workflow_type covers create, update, and
+    domain_access_update actions sharing one approval chain; picks the
+    right executor."""
     if instance["action_type"] == "create":
         return _execute_user_create(instance, actor)
     elif instance["action_type"] == "update":
         return _execute_user_update(instance, actor)
+    elif instance["action_type"] == "domain_access_update":
+        return _execute_user_domain_access_update(instance, actor)
     raise ValueError(f"Unknown action_type '{instance['action_type']}' for user_admin_change")
 
 
@@ -1391,6 +1755,9 @@ def reset_password(user_id: str, admin: dict = Depends(auth_mod.require_admin)):
 # delete, same convention as auth.users/column_rules/matching_rules) -- is
 # submitted into the 'reference_data_change' maker-checker workflow (1 Data
 # Owner, different from whoever requested it) instead of applied directly.
+#
+# Reference data (country/state codes) is inherently cross-domain shared
+# metadata, not scoped to any one domain -- no domain_key here, by design.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -1407,9 +1774,10 @@ def reset_password(user_id: str, admin: dict = Depends(auth_mod.require_admin)):
 # frontend. See scripts/ensure_governed_schemas.py's DEFAULT_ENTITY_TYPE_REGISTRY
 # docstring for the field_schema JSON shape.
 #
-# This only makes a new entity/rule *storable and editable*, not executable --
-# that's Phase 2 (RULE_TYPE_HANDLERS-style dispatch in api/validation.py, the
-# dbt models, and scripts/generate_matches.py).
+# Phase 4 (domain-agnostic): the four rules_config entity types' field_schema
+# now include domain_key/attribute_key fields (see api/db.py's
+# DEFAULT_ENTITY_TYPE_REGISTRY) -- a rule targets a specific domain's
+# attribute, not a hardcoded Customer column.
 # ---------------------------------------------------------------------------
 
 def _load_entity_type_row(entity_type: str) -> Optional[dict]:
@@ -1608,6 +1976,13 @@ def _execute_reference_data_change(instance: dict, actor: dict) -> dict:
 # applied directly. One workflow_type covers all four sub-tables (they share
 # the identical approval shape); `entity_type` distinguishes which table a
 # given instance targets.
+#
+# Phase 4 (domain-agnostic): every row in these four tables now carries
+# domain_key (Phase 2/3 migration, see api/db.py's _migrate_bus_rules_to_domain).
+# `domain_key` is an optional query filter below (GET) and, since it's part
+# of each entity_type's field_schema (api/db.py's DEFAULT_ENTITY_TYPE_REGISTRY),
+# already settable/updatable via the existing generic `fields` dict on POST
+# with no further code change needed here.
 # ---------------------------------------------------------------------------
 
 class RulesConfigRequest(BaseModel):
@@ -1617,14 +1992,19 @@ class RulesConfigRequest(BaseModel):
 
 
 @app.get("/api/v1/rules-config/{entity_type}")
-def list_rules_config(entity_type: str, limit: int = 10, offset: int = 0, user: dict = Depends(auth_mod.get_current_user)):
+def list_rules_config(entity_type: str, domain_key: Optional[str] = None, limit: int = 10, offset: int = 0,
+                       user: dict = Depends(auth_mod.get_current_user)):
     cfg = _rules_config_cfg(entity_type)
     if cfg is None:
         raise HTTPException(404, f"Unknown rules config entity_type '{entity_type}'")
     order_col = cfg["order_column"]
-    df = run_query(f"SELECT * FROM {cfg['table']} ORDER BY {order_col} LIMIT ? OFFSET ?", [limit, offset])
-    total = run_query(f"SELECT COUNT(*) AS n FROM {cfg['table']}").iloc[0]["n"]
-    return {"entity_type": entity_type, "total": int(total), "limit": limit, "offset": offset, "items": to_records(df)}
+    has_domain_col = "domain_key" in cfg["columns"]
+    where = " WHERE domain_key = ?" if (domain_key and has_domain_col) else ""
+    params = [domain_key] if (domain_key and has_domain_col) else []
+    df = run_query(f"SELECT * FROM {cfg['table']}{where} ORDER BY {order_col} LIMIT ? OFFSET ?", params + [limit, offset])
+    total = run_query(f"SELECT COUNT(*) AS n FROM {cfg['table']}{where}", params).iloc[0]["n"]
+    return {"entity_type": entity_type, "domain_filter": domain_key if has_domain_col else None,
+            "total": int(total), "limit": limit, "offset": offset, "items": to_records(df)}
 
 
 @app.post("/api/v1/rules-config")
@@ -1651,6 +2031,8 @@ def submit_rules_config_change(body: RulesConfigRequest, user: dict = Depends(au
     else:
         if not body.fields:
             raise HTTPException(400, "fields must not be empty when creating a new row")
+        if "domain_key" in cfg["columns"] and not body.fields.get("domain_key"):
+            raise HTTPException(400, f"domain_key is required when creating a new {body.entity_type}")
         action_type = "create"
         workflow_entity_id = f"new:{body.entity_type}:{uuid.uuid4().hex[:8]}"
 

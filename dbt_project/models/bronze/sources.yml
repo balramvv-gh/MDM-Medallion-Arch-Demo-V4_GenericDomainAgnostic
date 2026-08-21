@@ -4,14 +4,24 @@ sources:
   - name: bronze
     schema: bronze
     tables:
-      - name: crm_customers_raw
-      - name: erp_customers_raw
+      - name: raw_records
+        description: >
+          Phase 2 (domain-agnostic): one shared table for every domain and
+          source (scripts/load_bronze.py), replacing the old per-source
+          crm_customers_raw/erp_customers_raw tables. domain_key +
+          source_system + source_record_id identify a row; every other raw
+          field the source sent lands verbatim inside the `attributes` JSON
+          column. Append-only for incremental loads -- "current state" is
+          the latest row per (domain_key, source_system, source_record_id)
+          by _load_ts, collapsed downstream in
+          models/silver/stg_source_records.sql.
       - name: load_batches
         description: >
           Append-only log (scripts/load_bronze.py), one row per ingest run:
           load_batch_id (the UUID shared by every row that run landed, all
-          sources, full or incremental), load_type for the run as a whole,
-          which sources it touched, and total row count. Looked up at
-          compile time by macros/latest_load_batch.sql so the incremental
-          silver staging models (stg_crm_customers.sql / stg_erp_customers.sql)
-          know which bronze rows belong to "the current batch".
+          domains/sources, full or incremental), load_type for the run as a
+          whole, which "domain_key.source_system" combos it touched, and
+          total row count. Looked up at compile time by
+          macros/latest_load_batch.sql so the incremental silver staging
+          model (models/silver/stg_source_records.sql) knows which bronze
+          rows belong to "the current batch".

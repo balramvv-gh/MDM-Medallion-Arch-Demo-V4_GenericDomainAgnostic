@@ -58,19 +58,28 @@ DEFAULT_DOMAINS = [
 # directly (Phase 3 wires the two together properly).
 DEFAULT_CUSTOMER_ATTRIBUTES = [
     # attribute_key, display_label, data_type, is_required, is_matching_field,
-    # is_similarity_text_field, is_blocking_key, sort_order
-    ("first_name", "First Name", "string", True, False, True, False, 1),
-    ("last_name", "Last Name", "string", True, False, True, False, 2),
-    ("email", "Email", "string", True, True, False, False, 3),
-    ("phone", "Phone", "string", False, True, False, False, 4),
-    ("address_line1", "Address Line 1", "string", False, False, True, False, 5),
-    ("address_line2", "Address Line 2", "string", False, False, True, False, 6),
-    ("city", "City", "string", False, False, True, False, 7),
-    ("state_code", "State", "string", True, False, False, True, 8),
-    ("postal_code", "Postal Code", "string", False, False, False, False, 9),
-    ("country_code", "Country", "string", True, False, False, False, 10),
-    ("source_created_date", "Source Created Date", "date", False, False, False, False, 11),
-    ("source_modified_date", "Source Modified Date", "date", False, False, False, False, 12),
+    # is_similarity_text_field, is_blocking_key, is_dashboard_breakdown, sort_order
+    #
+    # is_dashboard_breakdown (Phase 4, domain-agnostic): flags which attributes
+    # the portal dashboard (GET /api/v1/portal/dashboard/{domain_key}/summary)
+    # renders a "count by value" chart for -- replaces the old hardcoded
+    # by_state/by_country breakdowns in api/main.py with a generic loop over
+    # every attribute flagged here, for any domain. Only state_code/
+    # country_code are flagged for customer today (matching the pre-Phase-4
+    # dashboard's exact two breakdowns); a future domain enables its own by
+    # flagging different attributes -- no API code change needed.
+    ("first_name", "First Name", "string", True, False, True, False, False, 1),
+    ("last_name", "Last Name", "string", True, False, True, False, False, 2),
+    ("email", "Email", "string", True, True, False, False, False, 3),
+    ("phone", "Phone", "string", False, True, False, False, False, 4),
+    ("address_line1", "Address Line 1", "string", False, False, True, False, False, 5),
+    ("address_line2", "Address Line 2", "string", False, False, True, False, False, 6),
+    ("city", "City", "string", False, False, True, False, False, 7),
+    ("state_code", "State", "string", True, False, False, True, True, 8),
+    ("postal_code", "Postal Code", "string", False, False, False, False, False, 9),
+    ("country_code", "Country", "string", True, False, False, False, True, 10),
+    ("source_created_date", "Source Created Date", "date", False, False, False, False, False, 11),
+    ("source_modified_date", "Source Modified Date", "date", False, False, False, False, False, 12),
 ]
 
 DEFAULT_CUSTOMER_SOURCE_SYSTEMS = [
@@ -85,6 +94,85 @@ DEFAULT_DOMAIN_RELATIONSHIPS = [
      "Illustrative link between the Customer and Product domains (e.g. "
      "purchase history) -- Product has no pipeline yet, so this "
      "relationship is metadata only for now."),
+]
+
+# ---------------------------------------------------------------------------
+# Phase 2: governance.source_field_mappings -- how each domain's source
+# system's own raw field names (bronze.raw_records.attributes, landed
+# verbatim/untouched) map onto that domain's canonical attribute_keys, plus
+# which standardization transform to apply. Read by
+# dbt_project/macros/source_field_mapping_select.sql at compile time (same
+# "run_query() over a governed table" pattern as column_rule_flags.sql) to
+# generate stg_source_records.sql's per-(domain,source_system) extraction
+# block -- one generic model for every domain/source instead of a
+# hand-written dbt file per source system.
+#
+# source_expr is a SQL expression over `attributes` (bronze's raw JSON
+# column) -- almost always a plain `attributes->>'raw_col'` extraction, but
+# may be a richer expression for a source's own quirks (e.g. ERP's
+# "Last, First" combined name field needs split_part(...)). This mirrors
+# real-world MDM connector configuration: mapping a new source's fields
+# always requires some source-specific adapter logic (every ETL/MDM
+# platform needs this), but everything downstream of this mapping step --
+# validation, matching, survivorship, the UI -- is 100% generic and
+# metadata-driven, with no domain or source name in any code.
+#
+# transform_function dispatches through
+# dbt_project/macros/transform_expr.sql (mirrors rule_type_expr.sql):
+# 'none' | 'trim' | 'trim_proper_case' | 'upper_trim' | 'lowercase_trim' |
+# 'phone_e164_us'.
+# ---------------------------------------------------------------------------
+
+DEFAULT_SOURCE_FIELD_MAPPINGS = [
+    # mapping_id, domain_key, source_system_key, attribute_key, source_expr, transform_function, description
+    ("SFM001", "customer", "CRM", "first_name", "attributes->>'first_name'", "trim_proper_case",
+     "CRM's first_name column, trimmed and proper-cased (R006/R007)."),
+    ("SFM002", "customer", "CRM", "last_name", "attributes->>'last_name'", "trim_proper_case",
+     "CRM's last_name column, trimmed and proper-cased (R006/R007)."),
+    ("SFM003", "customer", "CRM", "email", "attributes->>'email'", "trim",
+     "CRM's email column, trimmed only -- NOT lowercased (matches pre-Phase-2 behavior; ERP's is)."),
+    ("SFM004", "customer", "CRM", "phone", "attributes->>'phone'", "phone_e164_us",
+     "CRM's phone column, standardized to +1XXXXXXXXXX (R008)."),
+    ("SFM005", "customer", "CRM", "address_line1", "attributes->>'address_line1'", "trim", None),
+    ("SFM006", "customer", "CRM", "city", "attributes->>'city'", "trim", None),
+    ("SFM007", "customer", "CRM", "state_code", "attributes->>'state'", "upper_trim",
+     "CRM's raw column is named 'state'; canonical attribute is state_code."),
+    ("SFM008", "customer", "CRM", "postal_code", "attributes->>'zip'", "trim",
+     "CRM's raw column is named 'zip'; canonical attribute is postal_code."),
+    ("SFM009", "customer", "CRM", "country_code", "attributes->>'country'", "upper_trim",
+     "CRM's raw column is named 'country'; canonical attribute is country_code."),
+    (
+        "SFM010", "customer", "ERP", "first_name",
+        "split_part(attributes->>'full_name', ',', 2)", "trim_proper_case",
+        "ERP's full_name arrives as \"Last, First\" -- second comma-part is the first name.",
+    ),
+    (
+        "SFM011", "customer", "ERP", "last_name",
+        "split_part(attributes->>'full_name', ',', 1)", "trim_proper_case",
+        "ERP's full_name arrives as \"Last, First\" -- first comma-part is the last name.",
+    ),
+    ("SFM012", "customer", "ERP", "email", "attributes->>'email_addr'", "lowercase_trim",
+     "ERP's email_addr column, lowercased and trimmed (R014)."),
+    ("SFM013", "customer", "ERP", "phone", "attributes->>'contact_phone'", "phone_e164_us",
+     "ERP's contact_phone column, standardized to +1XXXXXXXXXX (R015)."),
+    ("SFM014", "customer", "ERP", "address_line1", "attributes->>'addr1'", "trim", None),
+    ("SFM015", "customer", "ERP", "address_line2", "attributes->>'addr2'", "trim", None),
+    ("SFM016", "customer", "ERP", "city", "attributes->>'city_code'", "trim", None),
+    ("SFM017", "customer", "ERP", "state_code", "attributes->>'state_code'", "upper_trim", None),
+    ("SFM018", "customer", "ERP", "postal_code", "attributes->>'postal_code'", "trim", None),
+    ("SFM019", "customer", "ERP", "country_code", "attributes->>'country_code'", "upper_trim", None),
+    # source_created_date / source_modified_date: structural "when did the
+    # source record last change" fields (domain_attributes sort_order 11/12),
+    # mapped the same way as any other attribute -- transform_function 'none'
+    # means "pass the raw value through, only the attribute's data_type-based
+    # cast applies" (see dbt_project/macros/transform_expr.sql). ERP has no
+    # created-date field at all, so it deliberately has NO SFM row for
+    # source_created_date -- mapped_attributes() emits NULL for a
+    # (domain, source, attribute) combination with no mapping row, matching
+    # pre-Phase-2 stg_erp_customers.sql's `cast(null as date) as source_created_date`.
+    ("SFM020", "customer", "CRM", "source_created_date", "attributes->>'created_date'", "none", None),
+    ("SFM021", "customer", "CRM", "source_modified_date", "attributes->>'modified_date'", "none", None),
+    ("SFM022", "customer", "ERP", "source_modified_date", "attributes->>'last_updated'", "none", None),
 ]
 
 
@@ -124,6 +212,9 @@ def ensure_domain_tables(con):
             PRIMARY KEY (domain_key, attribute_key)
         );
     """)
+    # Additive column on an already-existing table (a DB created before this
+    # flag existed) -- see DEFAULT_CUSTOMER_ATTRIBUTES' docstring above.
+    con.execute("ALTER TABLE governance.domain_attributes ADD COLUMN IF NOT EXISTS is_dashboard_breakdown BOOLEAN DEFAULT false;")
     con.execute("""
         CREATE TABLE IF NOT EXISTS governance.domain_source_systems (
             domain_key VARCHAR,
@@ -188,9 +279,21 @@ def ensure_domain_tables(con):
         con.execute("""
             INSERT INTO governance.domain_attributes
                 (domain_key, attribute_key, display_label, data_type, is_required,
-                 is_matching_field, is_similarity_text_field, is_blocking_key, sort_order)
-            VALUES ('customer', ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_matching_field, is_similarity_text_field, is_blocking_key,
+                 is_dashboard_breakdown, sort_order)
+            VALUES ('customer', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, attr)
+
+    # Backfill is_dashboard_breakdown onto rows inserted by an earlier Phase 1
+    # run (before this flag existed) -- the insert-if-missing loop above only
+    # covers brand-new rows, not the column added afterward to existing ones.
+    # Idempotent: a no-op once already applied.
+    con.execute("""
+        UPDATE governance.domain_attributes
+        SET is_dashboard_breakdown = true
+        WHERE domain_key = 'customer' AND attribute_key IN ('state_code', 'country_code')
+          AND NOT is_dashboard_breakdown
+    """)
 
     existing_sources = set(
         (r[0], r[1]) for r in con.execute(
@@ -218,6 +321,34 @@ def ensure_domain_tables(con):
             VALUES (?, ?, ?, ?, ?)
         """, row)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS governance.source_field_mappings (
+            mapping_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
+            source_system_key VARCHAR,
+            attribute_key VARCHAR,
+            source_expr VARCHAR,      -- SQL expression over bronze's raw `attributes` JSON column
+            transform_function VARCHAR DEFAULT 'none',
+            active BOOLEAN DEFAULT true,
+            description VARCHAR,
+            created_ts TIMESTAMP DEFAULT current_timestamp,
+            updated_ts TIMESTAMP DEFAULT current_timestamp,
+            updated_by VARCHAR
+        );
+    """)
+    existing_mappings = set(
+        r[0] for r in con.execute("SELECT mapping_id FROM governance.source_field_mappings").fetchall()
+    )
+    for row in DEFAULT_SOURCE_FIELD_MAPPINGS:
+        if row[0] in existing_mappings:
+            continue
+        con.execute("""
+            INSERT INTO governance.source_field_mappings
+                (mapping_id, domain_key, source_system_key, attribute_key, source_expr,
+                 transform_function, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, row)
+
 
 def migrate_user_domain_access(con):
     """One-time, idempotent migration: copy each auth.users.gold_access value
@@ -232,7 +363,20 @@ def migrate_user_domain_access(con):
     in sync on every future change, only backfilled once here (a user's
     gold_access edited after this point will not auto-propagate to
     user_domain_access until Phase 4 removes gold_access as the read path
-    entirely)."""
+    entirely).
+
+    No-ops (returns 0) if auth.users doesn't exist yet -- on a genuinely
+    fresh clone, scripts/build_pipeline.py can run before the FastAPI app
+    has ever started (which is what actually creates auth.users, via
+    api/db.py's _ensure_auth_tables). api/db.py's own mirror of this
+    function never hits this case, since get_con() always calls
+    _ensure_auth_tables first."""
+    auth_users_exists = con.execute("""
+        SELECT count(*) FROM information_schema.tables
+        WHERE table_schema = 'auth' AND table_name = 'users'
+    """).fetchone()[0]
+    if not auth_users_exists:
+        return 0
     users = con.execute("SELECT user_id, gold_access FROM auth.users").fetchall()
     existing = set(
         (r[0], r[1]) for r in con.execute(
@@ -255,6 +399,11 @@ def main():
     con = duckdb.connect(DB_PATH)
     ensure_domain_tables(con)
     migrated = migrate_user_domain_access(con)
+    # Flush this run's ALTER TABLE ... ADD COLUMN ... DEFAULT statements out
+    # of the WAL immediately rather than leaving them for whatever opens this
+    # file next to replay -- see api/db.py's get_con() for why (this
+    # installed DuckDB build can fail to replay such a WAL entry).
+    con.execute("CHECKPOINT")
     print(
         "governance.domain_registry/domain_attributes/domain_source_systems/"
         "domain_relationships/user_domain_access ready. "

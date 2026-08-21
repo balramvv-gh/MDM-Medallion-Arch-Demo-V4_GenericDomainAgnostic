@@ -21,18 +21,21 @@ Three write paths feed this module:
 No function in this module issues an UPDATE or DELETE against audit.audit_trail.
 Once written, a row is permanent, and there is deliberately no API endpoint
 that could mutate or remove one.
+
+Phase 4 (domain-agnostic): there's no more fixed TRACKED_FIELDS list. `record`/
+`old_record`/`new_record` are plain dicts -- the domain's attribute_key values
+(unpacked from golden_records.attributes JSON) plus the three fixed
+cross-domain metadata fields (source_system_count, survivor_source_system,
+survivor_source_record_id) -- and log_creation/log_update simply track
+whichever keys are present, the same "diff the union of keys" approach
+scripts/audit_pipeline_diff.py uses for the batch pipeline's own audit writes.
+This means a domain's attribute set can change over time with no code change
+here.
 """
 import uuid
 from datetime import datetime
 
 from db import run_write, run_query, to_records
-
-TRACKED_FIELDS = [
-    "first_name", "last_name", "email", "phone",
-    "address_line1", "address_line2", "city", "state_code",
-    "postal_code", "country_code",
-    "source_system_count", "survivor_source_system", "survivor_source_record_id",
-]
 
 
 def _s(v):
@@ -42,12 +45,12 @@ def _s(v):
 
 def log_creation(golden_id, record: dict, event_source, changed_by, changed_by_label,
                   change_reason, related_exception_id=None, event_ts=None):
-    """Logs one field-level 'created' row per non-null tracked field in `record`,
+    """Logs one field-level 'created' row per non-null field in `record`,
     all sharing a single change_batch_id."""
     batch_id = str(uuid.uuid4())
     ts = event_ts or datetime.utcnow()
     rows = []
-    for field in TRACKED_FIELDS:
+    for field in sorted(record.keys()):
         val = _s(record.get(field))
         if val is None:
             continue
@@ -58,14 +61,14 @@ def log_creation(golden_id, record: dict, event_source, changed_by, changed_by_l
 
 def log_update(golden_id, old_record: dict, new_record: dict, event_source, changed_by,
                 changed_by_label, change_reason, related_exception_id=None, event_ts=None):
-    """Diffs old_record vs new_record over TRACKED_FIELDS and logs one row per
-    field that actually changed, all sharing a single change_batch_id. Writes
-    nothing if no tracked field actually changed. Returns the number of fields
-    logged as changed."""
+    """Diffs old_record vs new_record over the union of their keys and logs
+    one row per field that actually changed, all sharing a single
+    change_batch_id. Writes nothing if no field actually changed. Returns
+    the number of fields logged as changed."""
     batch_id = str(uuid.uuid4())
     ts = event_ts or datetime.utcnow()
     rows = []
-    for field in TRACKED_FIELDS:
+    for field in sorted(set(old_record.keys()) | set(new_record.keys())):
         old_val = _s(old_record.get(field))
         new_val = _s(new_record.get(field))
         if old_val == new_val:
@@ -105,7 +108,7 @@ def get_audit_trail(golden_id: str) -> list:
 
 def reconstruct_last_known_state(golden_id: str) -> dict:
     """Fallback header info for when the golden record no longer exists in
-    main_gold.gold_customers (logically deleted) -- takes each tracked field's
+    main_gold.golden_records (logically deleted) -- takes each tracked field's
     most recently logged new_value."""
     df = run_query("""
         SELECT field_name, new_value FROM audit.audit_trail

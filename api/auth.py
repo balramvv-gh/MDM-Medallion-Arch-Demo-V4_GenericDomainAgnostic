@@ -110,12 +110,57 @@ def require_steward_or_owner(user: dict = Depends(get_current_user)) -> dict:
 
 
 def require_gold_write(user: dict = Depends(get_current_user)) -> dict:
+    """Pre-Phase-4 global gold-layer check, kept only for any caller that
+    genuinely has no domain in scope yet (e.g. an endpoint not yet migrated).
+    Prefer require_domain_write for anything record/domain-scoped."""
     if user["gold_access"] != "read_write":
         raise HTTPException(403, "Read/write access to the gold layer is required")
     return user
 
 
 def require_gold_read(user: dict = Depends(get_current_user)) -> dict:
+    """Pre-Phase-4 global gold-layer check -- see require_gold_write's note."""
     if user["gold_access"] not in ("read", "read_write"):
         raise HTTPException(403, "Read access to the gold layer is required")
+    return user
+
+
+# --- Phase 4 (domain-agnostic): per-domain access, governance.user_domain_access ---
+
+def domain_access_level(user_id: str, domain_key: str) -> str:
+    """Reads this user's gold_access level for ONE domain from
+    governance.user_domain_access (scripts/ensure_domain_metadata.py /
+    api/db.py's mirror), the intended replacement for the single global
+    auth.users.gold_access column (see that column's own migration,
+    scripts/ensure_domain_metadata.py's migrate_user_domain_access). Returns
+    'none' if no row exists for this (user_id, domain_key) pair -- a user is
+    never implicitly granted access to a domain they have no row for, even
+    if their legacy global gold_access was 'read_write'; user_domain_access
+    is the single source of truth for every endpoint that scopes by domain."""
+    df = run_query(
+        "SELECT gold_access FROM governance.user_domain_access WHERE user_id = ? AND domain_key = ?",
+        [user_id, domain_key],
+    )
+    if df.empty:
+        return "none"
+    return df.iloc[0]["gold_access"]
+
+
+def require_domain_write(domain_key: str, user: dict = Depends(get_current_user)) -> dict:
+    """FastAPI dependency: requires read_write access to `domain_key` for the
+    current user. `domain_key` is resolved from the route's own path
+    parameter of the same name (FastAPI shares path parameters across a
+    route's dependencies by name) -- callers just declare
+    `domain_key: str` on the route function and add
+    `Depends(require_domain_write)` (or require_domain_read below); no
+    per-domain wiring needed."""
+    if domain_access_level(user["user_id"], domain_key) != "read_write":
+        raise HTTPException(403, f"Read/write access to domain '{domain_key}' is required")
+    return user
+
+
+def require_domain_read(domain_key: str, user: dict = Depends(get_current_user)) -> dict:
+    """See require_domain_write -- same pattern, accepts 'read' or 'read_write'."""
+    if domain_access_level(user["user_id"], domain_key) not in ("read", "read_write"):
+        raise HTTPException(403, f"Read access to domain '{domain_key}' is required")
     return user

@@ -2,8 +2,8 @@
 Audit-trail diff step for the batch pipeline.
 
 Runs after `dbt run --select gold.*` (see scripts/build_pipeline.py, final
-step). Compares the just-rebuilt main_gold.gold_customers against a snapshot
-of the previous build (audit.gold_customers_snapshot -- a table in a schema
+step). Compares the just-rebuilt main_gold.golden_records against a snapshot
+of the previous build (audit.golden_records_snapshot -- a table in a schema
 dbt never touches, so it survives every `dbt run`'s CREATE OR REPLACE of the
 gold schema), and writes append-only rows to audit.audit_trail for every
 golden_id that:
@@ -14,6 +14,16 @@ golden_id that:
   - existed before but is no longer produced by this build   -> 'logically_deleted'
 
 Then refreshes the snapshot to the current state.
+
+Phase 3 (domain-agnostic): golden_records.attributes is a JSON bag whose key
+set varies by domain (governance.domain_attributes), so this script no
+longer hardcodes a Customer field list (the old TRACKED_FIELDS). Tracked
+attribute fields are simply the union of keys present in the record's
+old and/or new `attributes` JSON -- diffing whatever keys actually exist
+requires no domain metadata lookup at all, and adapts automatically if a
+domain's attribute set changes later. FIXED_TRACKED_FIELDS (the three
+non-attribute, survivorship-summary columns) stays a short constant since
+those are structural golden_records columns, not domain attributes.
 
 This is the ONLY place that captures pipeline-driven ("systemic") gold-layer
 changes -- api/audit.py's log_creation/log_update cover the two live, in-app
@@ -26,14 +36,15 @@ stewardship.match_review_* -- same rationale applies here).
 Known limitation (consistent with reprocessing.py's documented divergence): a
 golden_id created via real-time reprocessing can be renumbered by the next
 full `dbt run` (dbt's match-group numbering is a fresh dense_rank over the
-complete silver set on every run). When that happens, this diff logs the old
-number as 'logically_deleted' and the new number as 'created' -- even though
-it's the same underlying customer. That's an accepted tradeoff of this demo's
-golden ID numbering scheme, not a bug in the diff logic itself.
+complete silver set on every run, per domain). When that happens, this diff
+logs the old number as 'logically_deleted' and the new number as 'created' --
+even though it's the same underlying record. That's an accepted tradeoff of
+this demo's golden ID numbering scheme, not a bug in the diff logic itself.
 
 Usage: python scripts/audit_pipeline_diff.py
 (called automatically as the final step of scripts/build_pipeline.py)
 """
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,13 +52,6 @@ from pathlib import Path
 import duckdb
 
 DB_PATH = str(Path(__file__).resolve().parent.parent / "mdm_demo.duckdb")
-
-TRACKED_FIELDS = [
-    "first_name", "last_name", "email", "phone",
-    "address_line1", "address_line2", "city", "state_code",
-    "postal_code", "country_code",
-    "source_system_count", "survivor_source_system", "survivor_source_record_id",
-]
 
 CHANGED_BY = "system:dbt_pipeline"
 CHANGED_BY_LABEL = "Batch Pipeline (dbt run)"
@@ -76,12 +80,13 @@ def _ensure_audit_tables(con):
         );
     """)
     con.execute("""
-        CREATE TABLE IF NOT EXISTS audit.gold_customers_snapshot (
+        CREATE TABLE IF NOT EXISTS audit.golden_records_snapshot (
             golden_id VARCHAR PRIMARY KEY,
-            first_name VARCHAR, last_name VARCHAR, email VARCHAR, phone VARCHAR,
-            address_line1 VARCHAR, address_line2 VARCHAR, city VARCHAR, state_code VARCHAR,
-            postal_code VARCHAR, country_code VARCHAR, source_system_count INTEGER,
-            survivor_source_system VARCHAR, survivor_source_record_id VARCHAR
+            domain_key VARCHAR,
+            attributes JSON,
+            source_system_count INTEGER,
+            survivor_source_system VARCHAR,
+            survivor_source_record_id VARCHAR
         );
     """)
 
@@ -90,27 +95,39 @@ def _s(v):
     return None if v is None else str(v)
 
 
+def _record_dict(domain_key, attributes_json, source_system_count, survivor_source_system, survivor_source_record_id):
+    rec = dict(json.loads(attributes_json)) if attributes_json else {}
+    rec["source_system_count"] = source_system_count
+    rec["survivor_source_system"] = survivor_source_system
+    rec["survivor_source_record_id"] = survivor_source_record_id
+    return rec
+
+
 def main():
     con = duckdb.connect(DB_PATH)
     _ensure_audit_tables(con)
 
-    snapshot_was_empty = con.execute("SELECT COUNT(*) FROM audit.gold_customers_snapshot").fetchone()[0] == 0
+    snapshot_was_empty = con.execute("SELECT COUNT(*) FROM audit.golden_records_snapshot").fetchone()[0] == 0
 
-    field_list = ", ".join(TRACKED_FIELDS)
-    prev = {
-        row[0]: dict(zip(TRACKED_FIELDS, row[1:]))
-        for row in con.execute(f"SELECT golden_id, {field_list} FROM audit.gold_customers_snapshot").fetchall()
-    }
-    curr = {
-        row[0]: dict(zip(TRACKED_FIELDS, row[1:]))
-        for row in con.execute(f"SELECT golden_id, {field_list} FROM main_gold.gold_customers").fetchall()
-    }
+    prev = {}
+    for golden_id, domain_key, attrs, ssc, survivor_ss, survivor_sid in con.execute(
+        "SELECT golden_id, domain_key, attributes, source_system_count, "
+        "survivor_source_system, survivor_source_record_id FROM audit.golden_records_snapshot"
+    ).fetchall():
+        prev[golden_id] = (domain_key, _record_dict(domain_key, attrs, ssc, survivor_ss, survivor_sid))
+
+    curr = {}
+    for golden_id, domain_key, attrs, ssc, survivor_ss, survivor_sid in con.execute(
+        "SELECT golden_id, domain_key, attributes, source_system_count, "
+        "survivor_source_system, survivor_source_record_id FROM main_gold.golden_records"
+    ).fetchall():
+        curr[golden_id] = (domain_key, _record_dict(domain_key, attrs, ssc, survivor_ss, survivor_sid))
 
     now = datetime.now(timezone.utc)
     audit_rows = []
     created_count = updated_count = deleted_count = 0
 
-    for golden_id, rec in curr.items():
+    for golden_id, (domain_key, rec) in curr.items():
         if golden_id not in prev:
             batch_id = str(uuid.uuid4())
             reason = (
@@ -119,7 +136,7 @@ def main():
                 if snapshot_was_empty else
                 "Initial gold record created by pipeline batch run"
             )
-            for field in TRACKED_FIELDS:
+            for field in sorted(rec.keys()):
                 val = _s(rec.get(field))
                 if val is None:
                     continue
@@ -127,10 +144,11 @@ def main():
                                     CHANGED_BY, CHANGED_BY_LABEL, field, None, val, reason, None))
             created_count += 1
         else:
-            old = prev[golden_id]
+            _, old = prev[golden_id]
             batch_id = str(uuid.uuid4())
             changed_any = False
-            for field in TRACKED_FIELDS:
+            all_fields = sorted(set(old.keys()) | set(rec.keys()))
+            for field in all_fields:
                 old_val, new_val = _s(old.get(field)), _s(rec.get(field))
                 if old_val == new_val:
                     continue
@@ -159,8 +177,13 @@ def main():
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, audit_rows)
 
-    con.execute("DELETE FROM audit.gold_customers_snapshot;")
-    con.execute(f"INSERT INTO audit.gold_customers_snapshot SELECT golden_id, {field_list} FROM main_gold.gold_customers")
+    con.execute("DELETE FROM audit.golden_records_snapshot;")
+    con.execute("""
+        INSERT INTO audit.golden_records_snapshot
+        SELECT golden_id, domain_key, attributes, source_system_count,
+               survivor_source_system, survivor_source_record_id
+        FROM main_gold.golden_records
+    """)
 
     con.close()
     print(f"Audit diff complete: {created_count} created, {updated_count} updated, "
