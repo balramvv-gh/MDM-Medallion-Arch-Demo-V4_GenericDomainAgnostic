@@ -49,7 +49,7 @@ it any later would let step 3 hold a record whose review should already have
 been cancelled.
 
 Step 5 must run immediately after step 4, before any other write touches
-main_gold.gold_customers -- it diffs the freshly rebuilt table against the
+main_gold.golden_records -- it diffs the freshly rebuilt table against the
 audit trail's snapshot of the previous build. If you ever rebuild just the
 gold layer manually (`dbt run --select gold.*`) instead of via this script,
 run `python scripts/audit_pipeline_diff.py` afterward too, or that rebuild's

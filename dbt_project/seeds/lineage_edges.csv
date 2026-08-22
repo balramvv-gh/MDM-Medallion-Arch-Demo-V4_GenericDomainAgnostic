@@ -1,28 +1,46 @@
 edge_id,from_layer,from_table,from_column,to_layer,to_table,to_column,transform_rule_id,transform_description
-E001,bronze,crm_customers_raw,first_name,silver,silver_customers,first_name,R006,Trim + proper case
-E002,bronze,crm_customers_raw,last_name,silver,silver_customers,last_name,R007,Trim + proper case
-E003,bronze,crm_customers_raw,email,silver,silver_customers,email,R003,Validated against email regex
-E004,bronze,crm_customers_raw,phone,silver,silver_customers,phone,R008,Standardized to +1 E.164-style format
-E005,bronze,crm_customers_raw,state,silver,silver_customers,state_code,R004,Validated against ref_state_codes
-E006,bronze,crm_customers_raw,country,silver,silver_customers,country_code,R005,Validated against ref_country_codes
-E007,bronze,erp_customers_raw,full_name,silver,silver_customers,first_name,R009,Split on comma; second token; proper case
-E008,bronze,erp_customers_raw,full_name,silver,silver_customers,last_name,R009,Split on comma; first token; proper case
-E009,bronze,erp_customers_raw,email_addr,silver,silver_customers,email,R010,Lowercased and validated against email regex
-E010,bronze,erp_customers_raw,contact_phone,silver,silver_customers,phone,R015,Standardized to +1 E.164-style format
-E011,bronze,erp_customers_raw,state_code,silver,silver_customers,state_code,R012,Validated against ref_state_codes
-E012,bronze,erp_customers_raw,country_code,silver,silver_customers,country_code,R013,Validated against ref_country_codes
-E013,silver,silver_customers,email,gold_prep,match_groups,match_group_id,MR001,"Tier 1: exact_match_field rule (matching_rules.csv) -- normalized email (scripts/generate_matches.py)"
-E014,silver,silver_customers,phone,gold_prep,match_groups,match_group_id,MR002,"Tier 1: exact_match_field rule (matching_rules.csv) -- normalized phone (scripts/generate_matches.py)"
-E015,gold,gold_match_candidates,*,gold,gold_customers,*,SURV01,Record-level survivorship: most recently modified source wins
-E016,gold,gold_match_candidates,*,gold,gold_crosswalk,*,SURV01,Every contributing source record retained with confidence score
-E017,silver,exceptions_queue,*,stewardship_app,remediation_log,*,STEW01,Steward-reviewed corrections re-enter the pipeline at silver
-E018,gold_prep,match_edges,confidence,gold,gold_crosswalk,match_confidence_score,CONF01,"Edge confidence (tier 1's auto_merge_threshold for an exact match, or the cosine similarity score for a fuzzy match -- see matching_thresholds.csv) becomes the crosswalk's match_confidence_score"
-E019,gold_prep,match_review_candidates,*,gold,gold_match_review_queue,*,REVIEW01,Borderline fuzzy-match pairs surfaced for a data steward to confirm or reject
-E020,silver,silver_customers,first_name,gold_prep,match_groups,match_group_id,MR003,"Tier 2: similarity_text_field rule (matching_rules.csv) -- combined into TF-IDF character n-gram embedding text for fuzzy similarity scoring"
-E021,silver,silver_customers,last_name,gold_prep,match_groups,match_group_id,MR004,"Tier 2: similarity_text_field rule (matching_rules.csv) -- combined into TF-IDF character n-gram embedding text for fuzzy similarity scoring"
-E022,silver,silver_customers,address_line1,gold_prep,match_groups,match_group_id,MR005,"Tier 2: similarity_text_field rule (matching_rules.csv) -- combined into TF-IDF character n-gram embedding text for fuzzy similarity scoring"
-E023,silver,silver_customers,city,gold_prep,match_groups,match_group_id,MR007,"Tier 2: similarity_text_field rule (matching_rules.csv) -- combined into TF-IDF character n-gram embedding text for fuzzy similarity scoring"
-E024,silver,silver_customers,state_code,gold_prep,match_groups,match_group_id,MR008,"Tier 2: blocking_key rule (matching_rules.csv) -- candidate pairs are only compared within the same blocking key value, to avoid O(n^2) comparisons at scale"
-E025,gold_prep,match_groups,match_group_id,gold,gold_match_candidates,match_group_id,MATCH00,Match group assignment attached to each silver record
-E026,gold,gold_match_review_queue,*,stewardship_app,match_review_overrides,*,STEW02,"A steward's confirm/reject decision is recorded here; honored as a forced-merge (or permanent exclusion) on the next matching run"
-E027,silver,silver_customers,address_line2,gold_prep,match_groups,match_group_id,MR006,"Tier 2: similarity_text_field rule (matching_rules.csv) -- combined into TF-IDF character n-gram embedding text for fuzzy similarity scoring (optional field, blank treated as empty string)"
+E001,bronze,raw_records,CRM,silver,stg_source_records,first_name,SFM001,"CRM source_field_mapping SFM001 (raw column 'first_name'): trim + proper case (see also column_rules R006)"
+E002,bronze,raw_records,CRM,silver,stg_source_records,last_name,SFM002,"CRM source_field_mapping SFM002 (raw column 'last_name'): trim + proper case (see also column_rules R007)"
+E003,bronze,raw_records,CRM,silver,stg_source_records,email,SFM003,"CRM source_field_mapping SFM003 (raw column 'email'): trim only, not lowercased (see also column_rules R003 regex validation)"
+E004,bronze,raw_records,CRM,silver,stg_source_records,phone,SFM004,"CRM source_field_mapping SFM004 (raw column 'phone'): standardized to +1 E.164-style format (see also column_rules R008/R016)"
+E005,bronze,raw_records,CRM,silver,stg_source_records,address_line1,SFM005,"CRM source_field_mapping SFM005 (raw column 'address_line1'): trim (no dedicated validation rule)"
+E006,bronze,raw_records,CRM,silver,stg_source_records,city,SFM006,"CRM source_field_mapping SFM006 (raw column 'city'): trim (no dedicated validation rule)"
+E007,bronze,raw_records,CRM,silver,stg_source_records,state_code,SFM007,"CRM's raw column is named 'state'; canonical attribute is state_code -- upper + trim (see also column_rules R004)"
+E008,bronze,raw_records,CRM,silver,stg_source_records,postal_code,SFM008,"CRM's raw column is named 'zip'; canonical attribute is postal_code -- trim (no dedicated validation rule)"
+E009,bronze,raw_records,CRM,silver,stg_source_records,country_code,SFM009,"CRM's raw column is named 'country'; canonical attribute is country_code -- upper + trim (see also column_rules R005)"
+E010,bronze,raw_records,CRM,silver,stg_source_records,source_created_date,SFM020,"CRM source_field_mapping SFM020 (raw column 'created_date'): no transform, cast to date"
+E011,bronze,raw_records,CRM,silver,stg_source_records,source_modified_date,SFM021,"CRM source_field_mapping SFM021 (raw column 'modified_date'): no transform, cast to date -- drives survivorship's newest/oldest tie-break"
+E012,bronze,raw_records,ERP,silver,stg_source_records,first_name,SFM010,"ERP's full_name arrives as 'Last, First' -- second comma-part is the first name, trimmed + proper-cased"
+E013,bronze,raw_records,ERP,silver,stg_source_records,last_name,SFM011,"ERP's full_name arrives as 'Last, First' -- first comma-part is the last name, trimmed + proper-cased"
+E014,bronze,raw_records,ERP,silver,stg_source_records,email,SFM012,"ERP source_field_mapping SFM012 (raw column 'email_addr'): lowercased + trimmed (see also column_rules R010 regex, R014 lowercase)"
+E015,bronze,raw_records,ERP,silver,stg_source_records,phone,SFM013,"ERP source_field_mapping SFM013 (raw column 'contact_phone'): standardized to +1 E.164-style format (see also column_rules R015/R011)"
+E016,bronze,raw_records,ERP,silver,stg_source_records,address_line1,SFM014,"ERP source_field_mapping SFM014 (raw column 'addr1'): trim (no dedicated validation rule)"
+E017,bronze,raw_records,ERP,silver,stg_source_records,address_line2,SFM015,"ERP source_field_mapping SFM015 (raw column 'addr2'): trim (optional field, no dedicated validation rule)"
+E018,bronze,raw_records,ERP,silver,stg_source_records,city,SFM016,"ERP source_field_mapping SFM016 (raw column 'city_code'): trim (no dedicated validation rule)"
+E019,bronze,raw_records,ERP,silver,stg_source_records,state_code,SFM017,"ERP source_field_mapping SFM017 (raw column 'state_code'): upper + trim (see also column_rules R012)"
+E020,bronze,raw_records,ERP,silver,stg_source_records,postal_code,SFM018,"ERP source_field_mapping SFM018 (raw column 'postal_code'): trim (no dedicated validation rule)"
+E021,bronze,raw_records,ERP,silver,stg_source_records,country_code,SFM019,"ERP source_field_mapping SFM019 (raw column 'country_code'): upper + trim (see also column_rules R013)"
+E022,bronze,raw_records,ERP,silver,stg_source_records,source_modified_date,SFM022,"ERP source_field_mapping SFM022 (raw column 'last_updated'): no transform, cast to date -- drives survivorship's newest/oldest tie-break"
+E023,silver,stg_source_records,*,silver,staged_records,*,FILTER01,"Logical-delete filter: rows with is_deleted=true are dropped before reaching staged_records (staged_records.sql)"
+E024,silver,staged_records,*,silver,records,*,FILTER02,"Rows where is_invalid=false (passed every active bus_rules.column_rules reject-severity check, macros/validation_block.sql) become canonical silver records"
+E025,silver,staged_records,*,silver,exceptions_queue,*,FILTER03,"Rows where is_invalid=true, with their reject_reasons, are routed to the exception queue for steward remediation instead of silver.records"
+E026,silver,records,email,gold_prep,match_groups,match_group_id,MR001,"Tier 1: exact_match_field rule (matching_rules) -- normalized (trimmed, lowercased) email must match exactly (scripts/generate_matches.py)"
+E027,silver,records,phone,gold_prep,match_groups,match_group_id,MR002,"Tier 1: exact_match_field rule (matching_rules) -- normalized (digits-only) phone must match exactly (scripts/generate_matches.py)"
+E028,silver,records,first_name,gold_prep,match_groups,match_group_id,MR003,"Tier 2: similarity_text_field rule (matching_rules) -- included in the concatenated text used for TF-IDF character n-gram fuzzy similarity scoring"
+E029,silver,records,last_name,gold_prep,match_groups,match_group_id,MR004,"Tier 2: similarity_text_field rule (matching_rules) -- included in the concatenated text used for TF-IDF character n-gram fuzzy similarity scoring"
+E030,silver,records,address_line1,gold_prep,match_groups,match_group_id,MR005,"Tier 2: similarity_text_field rule (matching_rules) -- included in the concatenated text used for TF-IDF character n-gram fuzzy similarity scoring"
+E031,silver,records,address_line2,gold_prep,match_groups,match_group_id,MR006,"Tier 2: similarity_text_field rule (matching_rules) -- included in the concatenated text used for TF-IDF fuzzy similarity scoring (optional field, blank treated as empty string)"
+E032,silver,records,city,gold_prep,match_groups,match_group_id,MR007,"Tier 2: similarity_text_field rule (matching_rules) -- included in the concatenated text used for TF-IDF character n-gram fuzzy similarity scoring"
+E033,silver,records,state_code,gold_prep,match_groups,match_group_id,MR008,"Tier 2: blocking_key rule (matching_rules) -- candidate pairs are only compared within the same blocking key value, to avoid O(n^2) comparisons at scale (deliberately excludes email/phone)"
+E034,gold_prep,match_groups,match_group_id,gold,gold_match_candidates,match_group_id,MATCH00,"Match group assignment (union-find over exact + fuzzy embedding-similarity edges) attached to each silver record (gold_match_candidates.sql)"
+E035,gold,gold_match_candidates,*,gold,gold_survivorship_winners,*,SURV00,"Attribute-level survivorship: for each (domain_key, match_group_id, attribute_key) the single contributing source record whose value wins is picked per bus_rules.survivorship_rules (most_common/most_complete/oldest/newest/pattern_match/shortest_value, tie-broken by source_modified_date then domain_source_systems.sort_order)"
+E036,gold,gold_survivorship_winners,winning_value,gold,golden_records,attributes,SURV01,"Per-attribute survivorship winners pivoted back into one row per golden record's attributes JSON (golden_id = 'GOLD-<DOMAIN>-00001')"
+E037,gold,gold_survivorship_winners,*,gold,gold_crosswalk,winning_attributes,SURV02,"Survivorship winners grouped by contributing source record into the list of gold attributes that source won -- a single golden record can draw its email from one source and its address from another"
+E038,gold_prep,match_edges,confidence,gold,gold_crosswalk,match_confidence_score,CONF01,"Edge confidence (tier 1's auto_merge_threshold for an exact match, or the cosine similarity score for a fuzzy match -- bus_rules.matching_thresholds) becomes the crosswalk's match_confidence_score; an isolated single-source record falls back to the no_match_baseline 'provisional' score"
+E039,gold_prep,match_review_candidates,*,gold,gold_match_review_queue,*,REVIEW01,"Borderline fuzzy-match pairs (similarity between the review and auto-merge thresholds) surfaced for a data steward to confirm or reject"
+E040,gold,gold_match_review_queue,*,stewardship,match_review_overrides,*,STEW02,"A steward's confirm/reject decision on a borderline pair is recorded here (maker-checker workflow match_review_confirmation)"
+E041,gold,gold_match_review_queue,*,stewardship,match_review_log,*,STEW03,"Audit log entry written alongside the decision, recording the steward's action and note"
+E042,silver,exceptions_queue,*,stewardship,remediation_log,*,STEW01,"Every AI-suggested and steward-applied remediation action against this exception is logged here (ai_suggested / steward_resolve_submitted / steward_resolved / approval_rejected)"
+E043,silver,exceptions_queue,*,stewardship,remediated_records,*,STEW04,"Once a steward's correction passes re-validation and a Data Owner approves it (maker-checker workflow stewardship_remediation), the corrected attributes are stored here"
+E044,stewardship,remediated_records,*,silver,records,*,STEW05,"The approved correction is upserted directly into silver.records by the real-time reprocessing path (api/reprocessing.py), outside the next batch dbt run"
+E045,stewardship,match_review_overrides,*,gold_prep,match_groups,match_group_id,STEW06,"A confirmed pair is honored as a forced-merge (a rejected pair as a permanent exclusion) on the next matching run (scripts/generate_matches.py)"

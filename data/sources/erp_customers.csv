@@ -1,0 +1,101 @@
+customer_number,full_name,email_addr,contact_phone,addr1,addr2,city_code,state_code,postal_code,country_code,last_updated,is_deleted
+ERP-00001,"Gonzalez, Maria",maria.gonzalez@example.com,4105550142,142 Oak St,,Bel Air,MD,21014,US,2025-04-28,false
+ERP-00002,"Whitfield, James",james.whitfield@example.com,4435550199,88 Birchwood Ave,,Baltimore,MD,21201,US,2025-01-03,false
+ERP-00003,"Zhao, Ling",LING.ZHAO@EXAMPLE.COM,,500 Constitution Ave,,Washington,DC,20001,US,2025-01-26,false
+ERP-00004,"Rao, Aditya",aditya.rao@example.com,2125550163,9 Wall St,,New York,NY,10005,US,2025-02-24,false
+ERP-00005,"Moretti, Sofia",sofia.moretti@example.com,,22 Beacon St,,Boston,MA,02108,US,2025-02-03,false
+ERP-00006,"Okafor, David",david.okafor@@example,3125550111,1 State St,,Chicago,IL,60602,US,2025-03-04,false
+ERP-00007,"Carter, Emily",emily.carter@example.com,2155550155,300 Market St,,Philadelphia,PA,19106,US,2025-02-10,false
+ERP-00008,"Kim, Noah",noah.kim@example.com,5125550177,77 Congress Ave,,Austin,TX,78701,US,2025-03-19,false
+ERP-00009,"Haidari, Fatima",fatima.haidari@@example,7035550122,14 Duke St,,Alexandria,VA,22314,US,2025-05-22,false
+ERP-00010,"OBrien, Liam",liam.obrien@example.com,4045550133,10 Peachtree St,,Atlanta,GA,30303,US,2025-02-04,false
+ERP-00011,"Thompson, Ava",ava.thompson@example.com,3035550144,1 Civic Center Dr,,Denver,CO,80202,US,2025-01-28,false
+ERP-00012,"Al-Sayed, Mohammed",MOHAMMED.ALSAYED@EXAMPLE.COM,6025550166,200 W Jefferson St,,Phoenix,AZ,85003,USA1,2025-03-11,false
+ERP-00015,"Schmidt, Olivia",OLIVIA.SCHMIDT@EXAMPLE.COM,6515550139,15 Kellogg Blvd,,St Paul,MN,55102,US,2025-05-06,false
+ERP-00016,"Ferreira, Lucas",lucas.ferreira@example.com,3055550114,111 SW 1st St,,Miami,FL,33130,US,2025-03-06,false
+ERP-00017,"Bennett, Chloe",chloe.bennett@example.com,7025550128,500 S Grand Central Pkwy,,Las Vegas,NV,89106,US,2025-01-14,false
+ERP-00018,"Sullivan, Ryan",RYAN.SULLIVAN@EXAMPLE.COM,8015550119,451 S State St,,Salt Lake City,UT,84111,US,2025-01-24,false
+ERP-00019,"Carter, Ben",bcarter@example-corp.com,6175559192,5 Newbury Street,,Boston,MA,02116,US,2025-01-12,false
+ERP-00020,"Martinez, Izzy",izzy.m@example-corp.com,4805551145,220 Cactus Road,,Tempe,AZ,85281,US,2025-02-03,false
+ERP-00021,"Johnson, Danielle",DANIELLE.JOHNSON@EXAMPLE.COM,8555551824,21819 Johnson Course,,East William,KY,40111,US,2025-04-24,false
+ERP-00022,"Baldwin, Anna",anna.baldwin@example.com,2265554506,79402 Peterson Drives Apt. 511,,Davisstad,UT,84619,US,2025-05-24,false
+ERP-00023,"Williams, Joseph",joseph.williams@example.com,4515553657,1849 Ray Squares,,North Donnaport,NH,03112,US,2025-01-20,false
+ERP-00024,"Delacruz, Melissa",MELISSA.DELACRUZ@EXAMPLE.COM,3435551679,5255 Elizabeth Squares Apt. 928,,East Steven,MS,39153,US,2025-01-10,false
+ERP-00025,"Bowman, Veronica",veronica.bowman@example.com,8935558935,503 Linda Locks,,Carlshire,OH,45941,US,2025-05-22,false
+ERP-00026,"Rios, Leonard",leonard.rios@example.com,2905559674,42388 Burgess Meadow Suite 532,,Daviston,MO,63450,US,2025-02-02,false
+ERP-00027,"Moore, Eric",ERIC.MOORE@EXAMPLE.COM,6335550520,166 Rice Plaza Apt. 184,,Danielchester,TX,76798,US,2025-04-04,false
+ERP-00028,"Mckay, Shawn",shawn.mckay@example.com,2315551535,281 Skinner Parkways Apt. 252,,New Mariotown,VA,22459,US,2025-02-23,false
+ERP-00029,"Koch, Sarah",sarah.koch@example.com,,39117 Tiffany Place,,East Donna,ME,04239,US,2025-04-01,false
+ERP-00030,"Brennan, Joseph",JOSEPH.BRENNAN@EXAMPLE.COM,7185559863,346 Kim Path,,Martinezbury,NE,68009,US,2025-02-09,false
+ERP-00031,"Chapman, Matthew",matthew.chapman@example.com,2285559195,10310 Jones Freeway,,Elizabethborough,IN,47105,US,2025-02-15,false
+ERP-00032,"Walls, David",david.walls@example.com,4045558928,76311 Gomez Loop Suite 010,,Chandlerville,OK,73064,US,2025-02-15,false
+ERP-00033,"Herrera, James",JAMES.HERRERA@EXAMPLE.COM,6305553611,47317 Brent Plains Apt. 132,,Tuckerborough,DC,20026,US,2025-03-05,false
+ERP-00034,"Martin, Rachel",rachel.martin@example.com,6605559654,7468 Moore Hill Apt. 098,,Lake Leeton,AL,36200,US,2025-01-28,false
+ERP-00035,"Calhoun, Thomas",thomas.calhoun@example.com,4855550106,81219 Emma Freeway,,Wilsonshire,NC,27510,US,2025-05-01,false
+ERP-00036,"Williams, Beth",BETH.WILLIAMS@EXAMPLE.COM,9785552615,998 Donovan Ford Suite 346,,Lake Debbie,CO,80937,US,2025-04-28,false
+ERP-00037,"Walton, Leslie",leslie.walton@example.com,9155556924,9911 William Curve,,Nicolebury,CA,93028,US,2025-02-28,false
+ERP-00038,"Kim, Justin",justin.kim@example.com,5495554552,808 Huynh Cove Apt. 411,,West Juan,ND,58216,US,2025-02-19,false
+ERP-00039,"Harris, Jennifer",JENNIFER.HARRIS@EXAMPLE.COM,3605553527,740 Cynthia Village Suite 005,,Lake Tina,SC,29166,US,2025-03-13,false
+ERP-00040,"Arnold, Joyce",joyce.arnold@example.com,9825555514,12805 Russell Canyon,,Michaelton,NE,68116,US,2025-03-31,false
+ERP-00041,"Fleming, Michael",michael.fleming@@example,3055551519,8692 Michelle Union,,South Angel,TN,38518,US,2025-05-18,false
+ERP-00042,"Patton, Sandra",SANDRA.PATTON@EXAMPLE.COM,5905551584,2160 Walker Viaduct,,Baileybury,MT,59229,US,2025-01-30,false
+ERP-00043,"Lee, Andrew",andrew.lee@example.com,5685555635,45868 Crosby Crescent Suite 294,,North Candacestad,MA,02493,USA1,2025-05-29,false
+ERP-00044,"Graham, Kristin",kristin.graham@example.com,8195554333,9340 Smith Valley,,West Ryan,NY,12705,US,2025-01-28,false
+ERP-00045,"Alvarado, Cindy",CINDY.ALVARADO@EXAMPLE.COM,2455557527,465 Terry Plaza Apt. 366,,New Ashley,DE,19908,US,2025-03-22,false
+ERP-00046,"Smith, Amy",amy.smith@example.com,7505552045,9957 Ramos Forest,,Leonburgh,LA,70174,US,2025-01-30,false
+ERP-00047,"Beck, Justin",justin.beck@example.com,5885551291,34332 Brandon Mountains Apt. 769,,Lake Heather,RI,02927,US,2025-02-18,false
+ERP-00048,"Hernandez, Reginald",REGINALD.HERNANDEZ@EXAMPLE.COM,7665554803,63287 Angela Vista,,South Dennismouth,UT,84684,US,2025-04-22,false
+ERP-00049,"Hansen, Amanda",amanda.hansen@example.com,8445555925,868 Merritt Summit Suite 743,,Katiehaven,MD,21804,US,2025-05-18,false
+ERP-00050,"Hill, Courtney",courtney.hill@example.com,7925553150,45581 Edward Lights Apt. 316,,Riveramouth,CA,93407,US,2025-04-21,false
+ERP-00051,"Wall, Bryan",BRYAN.WALL@EXAMPLE.COM,9225551139,670 Evans Loaf,,Medinaside,MS,39052,US,2025-03-22,false
+ERP-00052,"Nelson, Tracy",tracy.nelson@example.com,2475553733,5627 Tina Place,,South Brittanytown,NM,87172,US,2025-05-10,false
+ERP-00053,"Taylor, Dawn",dawn.taylor@example.com,4975551307,46537 Rogers Light,,Karenchester,NH,03289,US,2025-03-25,false
+ERP-00054,"Ruiz, Mary",MARY.RUIZ@EXAMPLE.COM,4395551654,3100 James Brooks,,East David,WA,99372,US,2025-05-22,false
+ERP-00055,"Gould, Danny",danny.gould@example.com,5905554554,2991 Tami Coves Apt. 496,,Davidborough,NH,03108,US,2025-04-18,false
+ERP-00056,"Rivas, Brittany",brittany.rivas@example.com,6655555977,491 Michael Meadow,,Caseymouth,IA,50052,US,2025-05-26,false
+ERP-00057,"Short, Melissa",MELISSA.SHORT@EXAMPLE.COM,3675556065,7262 Gilbert Plain Suite 769,,Marcusbury,CT,06045,US,2025-05-21,false
+ERP-00058,"Hayes, Joshua",joshua.hayes@example.com,5645553432,965 Troy Islands Apt. 735,,Matthewview,WV,24742,US,2025-03-15,false
+ERP-00059,"Lee, Zachary",zachary.lee@example.com,8875554374,8377 Mcguire Course Suite 363,,Elizabethstad,IA,51939,US,2025-05-29,false
+ERP-00060,"Cooper, Angela",ANGELA.COOPER@EXAMPLE.COM,9195551169,7444 David Fields Suite 182,,East Joanna,WA,98567,US,2025-04-24,false
+ERP-00061,"Bray, Jenny",jenny.bray@example.com,8245552803,34352 Smith Place Apt. 400,,Heidiberg,NC,28312,US,2025-05-11,false
+ERP-00062,"Henry, Miranda",miranda.henry@example.com,7475554010,7752 Johnny Wall Suite 116,,Joneston,AL,35314,US,2025-01-22,false
+ERP-00063,"Hart, Edward",EDWARD.HART@EXAMPLE.COM,3685557573,18699 Kimberly Light,,Kerrport,ME,04779,US,2025-03-27,false
+ERP-00064,"Oliver, Kevin",kevin.oliver@example.com,5895554422,34123 Andrea Estate,,South Shannonfort,RI,02875,US,2025-03-21,false
+ERP-00065,"Roberts, Antonio",antonio.roberts@example.com,8565559125,34936 Amy Rue Apt. 421,,East Laurashire,LA,70592,US,2025-02-07,false
+ERP-00066,"Harrison, Scott",SCOTT.HARRISON@EXAMPLE.COM,4255555313,8877 Carly Meadows Suite 940,,East Suzanneshire,ME,03943,US,2025-03-04,false
+ERP-00067,"Chambers, Yvonne",yvonne.chambers@example.com,9875550916,78742 Walters Overpass,,South Michaelmouth,KY,41318,US,2025-04-27,false
+ERP-00068,"Hodge, Elizabeth",elizabeth.hodge@example.com,4355550525,746 Shawn Island Suite 516,,Lake Mollymouth,MA,01847,US,2025-02-19,false
+ERP-00069,"Stone, Brian",BRIAN.STONE@EXAMPLE.COM,5245556572,703 Dunn Heights Suite 710,,Lake Eric,RI,02804,US,2025-04-13,false
+ERP-00070,"Davis, Andrea",andrea.davis@example.com,4755551084,27484 Davenport Mountains Apt. 782,,Leehaven,DE,19770,US,2025-01-02,false
+ERP-00071,"Hill, Michelle",michelle.hill@example.com,4175559292,8404 Monroe Prairie Suite 278,,Reedside,WY,83113,US,2025-02-26,false
+ERP-00072,"Cantu, Nicholas",NICHOLAS.CANTU@EXAMPLE.COM,9365555155,636 Louis Mountains,,Hughesberg,ID,83708,US,2025-04-29,false
+ERP-00073,"Martinez, Tammie",tammie.martinez@example.com,4185558179,71870 Robert Shoal Apt. 174,,Cindyfurt,OR,97666,US,2025-03-05,false
+ERP-00074,"Murphy, Christopher",christopher.murphy@example.com,6065557517,7809 Jimmy Spur Suite 316,,Port Cynthiaville,TX,79137,US,2025-02-04,false
+ERP-00075,"Evans, Garrett",GARRETT.EVANS@EXAMPLE.COM,3475554339,0455 Thomas Pines,,Knightburgh,AK,99588,US,2025-05-24,false
+ERP-00076,"Lynch, Gregory",gregory.lynch@example.com,3435554040,9237 Stevens Shores,,Port Stevenport,MS,39720,US,2025-05-10,false
+ERP-00077,"Alexander, Eric",eric.alexander@example.com,9635559197,647 Gonzalez Lights Suite 136,,Baileyport,MI,48045,USA1,2025-04-25,false
+ERP-00078,"Barrett, Tiffany",TIFFANY.BARRETT@EXAMPLE.COM,7525554304,097 Parsons Forks,,Jefferyborough,KY,42546,US,2025-04-26,false
+ERP-00079,"Campos, John",john.campos@example.com,9655559577,104 Johnson Lakes,,North Renee,WI,53670,US,2025-03-12,false
+ERP-00080,"Thompson, Julie",julie.thompson@example.com,6395559560,842 Sloan Orchard Suite 517,,East Karenbury,DC,20026,US,2025-03-03,false
+ERP-00081,"Ballard, Tammy",TAMMY.BALLARD@EXAMPLE.COM,6095555930,0481 Richardson Summit,,Brendastad,MN,55222,US,2025-01-20,false
+ERP-00082,"Ruiz, Emily",emily.ruiz@example.com,4255552266,317 Banks Crescent Apt. 004,,Wilsonbury,RI,02938,US,2025-03-11,false
+ERP-00083,"Chavez, Derek",derek.chavez@example.com,7225558085,261 Gilbert Harbors Apt. 537,,Sampsonstad,TN,37213,US,2025-05-19,false
+ERP-00084,"Richardson, Tin",tina.richardson21@example-corp.com,8975556916,64317 Elizabeth Row Apt. 053,,Port Anne,SD,57071,US,2025-02-08,false
+ERP-00085,"Spencer, Maira",maia.spencer68@example-corp.com,4585559064,52904 Vanessa Plains,,Laurenville,OR,97677,US,2025-02-09,false
+ERP-00086,"Anderson, Michele",michelel.anderson44@example-corp.com,3155554808,502 Williams Streets,,Foxland,MI,48976,US,2025-04-17,false
+ERP-00087,"Cox, Sahne",shae.cox34@example-corp.com,7135552927,8390 Ellis Burgs,,South Melaniechester,OR,97703,US,2025-05-19,false
+ERP-00088,"Joseph, Danel",daiel.joseph20@example-corp.com,5835552646,59212 Weber Prairie,,Oscarhaven,NV,89202,US,2025-01-16,false
+ERP-00089,"Jacobs, Shaw",sahwn.jacobs15@example-corp.com,5725555038,836 Beasley Loop,,Mariafurt,CT,06213,US,2025-04-10,false
+ERP-00090,"Edwards, Jes",jess.edwards9@example-corp.com,9795558727,2711 Christopher Court Suite 280,,Elizabethchester,MD,21536,US,2025-05-28,false
+ERP-00091,"Pugh, Morg",mogan.pugh34@example-corp.com,7415559938,9451 Eric Orchard,,Port Daniel,NE,68109,US,2025-01-02,false
+ERP-00092,"Wilson, Anela",angla.wilson52@example-corp.com,8885556118,8998 Chelsea Shoals,,Anthonyview,KY,41268,US,2025-04-10,false
+ERP-00093,"Bell, Snadra",san.bell9@example-corp.com,5475550344,612 Christopher Pines,,South Robert,HI,96788,US,2025-05-20,false
+ERP-00104,"Calderon, Elizabeth",elizabeth.calderon@example.com,3365559355,685 Michael Falls,,West Stacey,WA,98996,US,2025-02-04,false
+ERP-00105,"Cooke, James",JAMES.COOKE@EXAMPLE.COM,7915557744,1888 Ebony Wells,,New Nicholas,FL,32668,US,2025-04-29,false
+ERP-00106,"Schwartz, Henry",henry.schwartz@example.com,4495557749,706 Rhodes Freeway,,Bishopmouth,RI,02860,US,2025-02-16,false
+ERP-00107,"Collins, Amanda",amanda.collins@example.com,6175553119,59774 Shaw Manor Apt. 392,,Brettfort,WY,82761,US,2025-01-13,false
+ERP-00108,"Garcia, Angela",ANGELA.GARCIA@EXAMPLE.COM,2975551588,1247 Mariah Course,,Port Shannon,NC,27721,US,2025-03-08,false
+ERP-00109,"Perry, Sarah",sarah.perry@example.com,8755557062,61530 Galvan Villages Suite 220,,Samanthafort,MO,65852,US,2025-04-08,false
+ERP-00110,"Blake, Mariah",mariah.blake@example.com,5635556939,010 Lewis Drive Suite 143,,Davidbury,NJ,07860,US,2025-03-25,false
+ERP-00111,"Dean, Danielle",DANIELLE.DEAN@EXAMPLE.COM,6215557651,9808 Jennifer Highway,,Smithstad,CA,91971,US,2025-02-24,false
+ERP-00112,"Lopez, Ashley",ashley.lopez@example.com,9475550887,518 Peter Mountains,,Lake Paulstad,TN,37529,US,2025-04-27,false

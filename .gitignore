@@ -8,3 +8,5 @@ node_modules/
 dbt_project/target/
 dbt_project/logs/
 dbt_project/dbt_packages/
+data/sources/*.orig
+_to_delete/

@@ -3,9 +3,10 @@ DQ Agent -- Profiling, validation, standardization.
 
 Wraps the silver-layer dbt run (`dbt run --exclude gold.*`), which is where
 metadata-driven cleansing/standardization/validation actually happens today
-(bus_rules.column_rules, applied in stg_crm_customers.sql/stg_erp_customers.sql;
-records failing validation route to exceptions_queue instead of
-silver_customers). No validation logic is reimplemented here -- this agent
+(bus_rules.column_rules, applied generically for every domain/source in
+stg_source_records.sql; records failing validation route to
+exceptions_queue instead of main_silver.records). No validation logic is
+reimplemented here -- this agent
 only decides --full-refresh the same way scripts/build_pipeline.py does
 (reads bronze.load_batches for the most recent batch's load_type) and
 reports post-run exception/silver row counts.
@@ -36,7 +37,7 @@ class DQAgent(BaseAgent):
         row_counts = self._silver_row_counts()
         detail = (
             f"silver rebuilt (full_refresh={full_refresh}); "
-            f"{row_counts.get('silver_customers', '?')} silver rows, "
+            f"{row_counts.get('silver_records', '?')} silver rows, "
             f"{row_counts.get('exceptions_queued', '?')} exceptions queued this rebuild"
         )
         return row_counts, detail
@@ -65,7 +66,10 @@ class DQAgent(BaseAgent):
 
     @staticmethod
     def _silver_row_counts() -> dict:
-        """exceptions_queued is a plain count of main_silver.exceptions_queue
+        """silver_records is a plain count of main_silver.records (the
+        real, current table -- domain-agnostic since Phase 2, replacing the
+        old fixed silver_customers table). exceptions_queued is a plain
+        count of main_silver.exceptions_queue
         after this rebuild -- every row the dbt model produces starts
         'open' (see exceptions_queue.sql's remediation_status literal); the
         LIVE open/in_review/resolved/rejected status stewards actually see
@@ -78,7 +82,7 @@ class DQAgent(BaseAgent):
         try:
             counts = {}
             for label, schema, table in [
-                ("silver_customers", "main_silver", "silver_customers"),
+                ("silver_records", "main_silver", "records"),
                 ("exceptions_queued", "main_silver", "exceptions_queue"),
             ]:
                 exists = con.execute("""

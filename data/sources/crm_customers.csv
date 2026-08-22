@@ -1,0 +1,101 @@
+customer_id,first_name,last_name,email,phone,address_line1,city,state,zip,country,created_date,modified_date,is_deleted
+CRM-0001,Maria,Gonzalez,maria.gonzalez@example.com,410-555-0142,142 Oak St,Bel Air,MD,21014,US,2025-05-15,2025-03-18,false
+CRM-0002,James,,james.whitfield@example.com,443-555-0199,88 Birchwood Ave,Baltimore,MD,21201,US,2025-11-20,2025-01-19,false
+CRM-0003,Ling,Zhao,ling.zhao@example.com,202-555-0117,500 Constitution Ave,Washington,DC,20001,US,2026-04-15,2025-05-25,false
+CRM-0004,Aditya,Rao,aditya.rao@example.com,212-555-0163,9 Wall St,New York,NY,10005,US,2025-03-17,2025-05-18,false
+CRM-0005,Sofia,Moretti,sofia.moretti[at]example.com,617-555-0180,22 Beacon St,Boston,MA,02108,US,2026-06-03,2025-03-09,false
+CRM-0006,David,Okafor,david.okafor@example.com,312-555-0111,1 State St,Chicago,IL,60602,US,2025-12-24,2025-01-18,false
+CRM-0007,Emily,Carter,emily.carter@example.com,215-555-0155,300 Market St,Philadelphia,PA,19106,US,2026-01-14,2025-03-14,false
+CRM-0008,Noah,Kim,noah.kim@example.com,512-555-0177,77 Congress Ave,Austin,TX,78701,US,2026-03-25,2025-05-20,false
+CRM-0009,Fatima,Haidari,fatima.haidari@example.com,703-555-0122,14 Duke St,Alexandria,ZZ,22314,US,2026-06-26,2025-01-03,false
+CRM-0010,Liam,OBrien,liam.obrien@example.com,404-555-0133,10 Peachtree St,Atlanta,GA,30303,US,2025-11-03,2025-01-27,false
+CRM-0011,  ava ,THOMPSON,ava.thompson@example.com,303-555-0144,1 Civic Center Dr,Denver,CO,80202,US,2025-09-28,2025-01-30,false
+CRM-0012,Mohammed,Al-Sayed,mohammed.alsayed@example.com,602-555-0166,200 W Jefferson St,Phoenix,AZ,85003,US,2026-07-21,2025-02-09,false
+CRM-0013,Grace,Nguyen,grace.nguyen@example.com,206-555-0188,600 4th Ave,Seattle,WA,98104,US,2025-10-16,2025-02-23,false
+CRM-0014,Ethan,Brooks,ethan.brooks@example.com,614-555-0121,90 W Broad St,Columbus,OH,43215,US,2025-12-18,2025-02-22,false
+CRM-0015,Olivia,Schmidt,olivia.schmidt@example.com,651-555-0139,15 Kellogg Blvd,St Paul,ZZ,55102,US,2025-09-28,2025-05-10,false
+CRM-0019,Benjamin,Carter,benjamin.carter@example.com,617-555-0192,5 Newbury St,Boston,MA,02116,US,2026-03-10,2025-03-12,false
+CRM-0020,Isabella,Martinez,isabella.martinez@example.com,480-555-0145,220 Cactus Rd,Tempe,AZ,85281,US,2025-01-04,2025-03-27,false
+CRM-0021,Danielle,Johnson,danielle.johnson@example.com,855-555-1824,21819 Johnson Course,East William,KY,40111,US,2025-09-26,2025-02-11,false
+CRM-0022,Anna,Baldwin,anna.baldwin@example.com,226-555-4506,79402 Peterson Drives Apt. 511,Davisstad,UT,84619,US,2026-07-19,2025-04-20,false
+CRM-0023,Joseph,Williams,joseph.williams@example.com,451-555-3657,1849 Ray Squares,North Donnaport,NH,03112,US,2025-01-10,2025-01-29,false
+CRM-0024,Melissa,Delacruz,melissa.delacruz@example.com,343-555-1679,5255 Elizabeth Squares Apt. 928,East Steven,MS,39153,US,2025-06-02,2025-05-20,false
+CRM-0025,Veronica,Bowman,veronica.bowman@example.com,893-555-8935,503 Linda Locks,Carlshire,OH,45941,US,2026-01-14,2025-05-30,false
+CRM-0026,Leonard,Rios,leonard.rios@example.com,290-555-9674,42388 Burgess Meadow Suite 532,Daviston,MO,63450,US,2025-06-01,2025-04-21,false
+CRM-0027,Eric,Moore,eric.moore@example.com,633-555-0520,166 Rice Plaza Apt. 184,Danielchester,TX,76798,US,2025-02-12,2025-03-20,false
+CRM-0028,Shawn,Mckay,shawn.mckay@example.com,231-555-1535,281 Skinner Parkways Apt. 252,New Mariotown,VA,22459,US,2025-02-10,2025-04-02,false
+CRM-0029,Sarah,Koch,sarah.koch@example.com,424-555-3811,39117 Tiffany Place,East Donna,ME,04239,US,2025-09-13,2025-01-27,false
+CRM-0030,Joseph,Brennan,joseph.brennan@example.com,718-555-9863,346 Kim Path,Martinezbury,NE,68009,US,2026-07-28,2025-04-15,false
+CRM-0031,Matthew,Chapman,matthew.chapman@example.com,228-555-9195,10310 Jones Freeway,Elizabethborough,IN,47105,US,2025-08-31,2025-02-11,false
+CRM-0032,David,Walls,david.walls@example.com,404-555-8928,76311 Gomez Loop Suite 010,Chandlerville,OK,73064,US,2026-02-27,2025-01-07,false
+CRM-0033,James,Herrera,james.herrera@example.com,630-555-3611,47317 Brent Plains Apt. 132,Tuckerborough,DC,20026,US,2025-12-07,2025-04-16,false
+CRM-0034,Rachel,Martin,rachel.martin@example.com,660-555-9654,7468 Moore Hill Apt. 098,Lake Leeton,AL,36200,US,2025-10-01,2025-02-10,false
+CRM-0035,Thomas,Calhoun,thomas.calhoun@example.com,485-555-0106,81219 Emma Freeway,Wilsonshire,NC,27510,US,2026-01-27,2025-01-10,false
+CRM-0036,Beth,Williams,beth.williams@example.com,978-555-2615,998 Donovan Ford Suite 346,Lake Debbie,CO,80937,US,2025-08-16,2025-02-21,false
+CRM-0037,Leslie,Walton,leslie.walton@example.com,915-555-6924,9911 William Curve,Nicolebury,CA,93028,US,2025-12-25,2025-03-20,false
+CRM-0038,Justin,Kim,justin.kim@example.com,549-555-4552,808 Huynh Cove Apt. 411,West Juan,ND,58216,US,2025-08-17,2025-01-07,false
+CRM-0039,Jennifer,Harris,jennifer.harris@example.com,360-555-3527,740 Cynthia Village Suite 005,Lake Tina,SC,29166,US,2026-02-13,2025-03-26,false
+CRM-0040,Joyce,Arnold,joyce.arnold@example.com,982-555-5514,12805 Russell Canyon,Michaelton,NE,68116,US,2025-03-13,2025-03-13,false
+CRM-0041,Michael,Fleming,michael.fleming@example.com,305-555-1519,8692 Michelle Union,South Angel,TN,38518,US,2026-06-06,2025-04-13,false
+CRM-0042,Sandra,Patton,sandra.patton@example.com,590-555-1584,2160 Walker Viaduct,Baileybury,MT,59229,US,2025-12-06,2025-01-08,false
+CRM-0043,Andrew,Lee,andrew.lee@example.com,568-555-5635,45868 Crosby Crescent Suite 294,North Candacestad,MA,02493,US,2025-09-25,2025-02-15,false
+CRM-0044,Kristin,Graham,kristin.graham@example.com,819-555-4333,9340 Smith Valley,West Ryan,NY,12705,US,2025-09-29,2025-01-10,false
+CRM-0045,Cindy,Alvarado,cindy.alvarado@example.com,245-555-7527,465 Terry Plaza Apt. 366,New Ashley,DE,19908,US,2026-03-21,2025-03-30,false
+CRM-0046,Amy,Smith,amy.smith@example.com,750-555-2045,9957 Ramos Forest,Leonburgh,LA,70174,US,2026-03-23,2025-05-11,false
+CRM-0047,Justin,Beck,justin.beck@example.com,588-555-1291,34332 Brandon Mountains Apt. 769,Lake Heather,RI,02927,US,2026-01-30,2025-05-28,false
+CRM-0048,Reginald,Hernandez,reginald.hernandez@example.com,766-555-4803,63287 Angela Vista,South Dennismouth,UT,84684,US,2025-09-18,2025-01-12,false
+CRM-0049,Amanda,Hansen,amanda.hansen@example.com,844-555-5925,868 Merritt Summit Suite 743,Katiehaven,MD,21804,US,2025-01-02,2025-05-14,false
+CRM-0050,Courtney,Hill,courtney.hill@example.com,792-555-3150,45581 Edward Lights Apt. 316,Riveramouth,CA,93407,US,2025-07-21,2025-04-04,false
+CRM-0051,Bryan,Wall,bryan.wall@example.com,922-555-1139,670 Evans Loaf,Medinaside,MS,39052,US,2025-03-13,2025-03-26,false
+CRM-0052,Tracy,Nelson,tracy.nelson@example.com,247-555-3733,5627 Tina Place,South Brittanytown,NM,87172,US,2025-05-08,2025-03-18,false
+CRM-0053,Dawn,Taylor,dawn.taylor@example.com,497-555-1307,46537 Rogers Light,Karenchester,NH,03289,US,2025-11-13,2025-04-15,false
+CRM-0054,Mary,Ruiz,mary.ruiz@example.com,439-555-1654,3100 James Brooks,East David,WA,99372,US,2026-02-17,2025-03-17,false
+CRM-0055,Danny,Gould,danny.gould@example.com,590-555-4554,2991 Tami Coves Apt. 496,Davidborough,NH,03108,US,2025-05-11,2025-02-19,false
+CRM-0056,Brittany,Rivas,brittany.rivas@example.com,665-555-5977,491 Michael Meadow,Caseymouth,IA,50052,US,2026-01-24,2025-02-14,false
+CRM-0057,Melissa,Short,melissa.short@example.com,367-555-6065,7262 Gilbert Plain Suite 769,Marcusbury,CT,06045,US,2025-11-05,2025-04-14,false
+CRM-0058,Joshua,Hayes,joshua.hayes@example.com,564-555-3432,965 Troy Islands Apt. 735,Matthewview,WV,24742,US,2025-01-01,2025-03-19,false
+CRM-0059,Zachary,Lee,zachary.lee@example.com,887-555-4374,8377 Mcguire Course Suite 363,Elizabethstad,IA,51939,US,2025-08-04,2025-04-21,false
+CRM-0060,Angela,Cooper,angela.cooper@example.com,919-555-1169,7444 David Fields Suite 182,East Joanna,WA,98567,US,2025-11-26,2025-04-30,false
+CRM-0061,Jenny,Bray,jenny.bray@example.com,824-555-2803,34352 Smith Place Apt. 400,Heidiberg,NC,28312,US,2026-03-29,2025-02-24,false
+CRM-0062,Miranda,Henry,miranda.henry@example.com,747-555-4010,7752 Johnny Wall Suite 116,Joneston,AL,35314,US,2026-04-30,2025-02-13,false
+CRM-0063,  edward ,HART,edward.hart@example.com,368-555-7573,18699 Kimberly Light,Kerrport,ME,04779,US,2025-10-18,2025-05-12,false
+CRM-0064,Kevin,Oliver,kevin.oliver@example.com,589-555-4422,34123 Andrea Estate,South Shannonfort,RI,02875,US,2025-04-06,2025-03-02,false
+CRM-0065,Antonio,Roberts,antonio.roberts@example.com,856-555-9125,34936 Amy Rue Apt. 421,East Laurashire,LA,70592,US,2025-08-19,2025-02-20,false
+CRM-0066,Scott,Harrison,scott.harrison@example.com,425-555-5313,8877 Carly Meadows Suite 940,East Suzanneshire,ME,03943,US,2025-01-26,2025-01-12,false
+CRM-0067,Yvonne,Chambers,yvonne.chambers@example.com,987-555-0916,78742 Walters Overpass,South Michaelmouth,KY,41318,US,2026-05-02,2025-01-19,false
+CRM-0068,Elizabeth,Hodge,elizabeth.hodge@example.com,435-555-0525,746 Shawn Island Suite 516,Lake Mollymouth,MA,01847,US,2026-03-01,2025-05-28,false
+CRM-0069,Brian,Stone,brian.stone@example.com,524-555-6572,703 Dunn Heights Suite 710,Lake Eric,RI,02804,US,2026-01-29,2025-05-07,false
+CRM-0070,Andrea,,andrea.davis@example.com,475-555-1084,27484 Davenport Mountains Apt. 782,Leehaven,DE,19770,US,2025-09-07,2025-02-07,false
+CRM-0071,Michelle,Hill,michelle.hill@example.com,417-555-9292,8404 Monroe Prairie Suite 278,Reedside,WY,83113,US,2025-04-20,2025-04-19,false
+CRM-0072,Nicholas,Cantu,nicholas.cantu@example.com,936-555-5155,636 Louis Mountains,Hughesberg,ID,83708,US,2025-06-30,2025-05-13,false
+CRM-0073,Tammie,Martinez,tammie.martinez@example.com,418-555-8179,71870 Robert Shoal Apt. 174,Cindyfurt,OR,97666,US,2025-02-21,2025-05-23,false
+CRM-0074,Christopher,Murphy,christopher.murphy@example.com,606-555-7517,7809 Jimmy Spur Suite 316,Port Cynthiaville,TX,79137,US,2025-05-05,2025-04-27,false
+CRM-0075,  garrett ,EVANS,garrett.evans@example.com,347-555-4339,0455 Thomas Pines,Knightburgh,AK,99588,US,2026-04-21,2025-05-16,false
+CRM-0076,Gregory,Lynch,gregory.lynch@example.com,343-555-4040,9237 Stevens Shores,Port Stevenport,MS,39720,US,2025-11-21,2025-04-24,false
+CRM-0077,Eric,Alexander,eric.alexander@example.com,963-555-9197,647 Gonzalez Lights Suite 136,Baileyport,MI,48045,US,2026-03-13,2025-05-21,false
+CRM-0078,Tiffany,Barrett,tiffany.barrett@example.com,752-555-4304,097 Parsons Forks,Jefferyborough,KY,42546,US,2025-06-12,2025-05-02,false
+CRM-0079,John,Campos,john.campos@example.com,965-555-9577,104 Johnson Lakes,North Renee,WI,53670,US,2025-09-23,2025-03-05,false
+CRM-0080,Julie,Thompson,julie.thompson@example.com,639-555-9560,842 Sloan Orchard Suite 517,East Karenbury,DC,20026,US,2026-06-18,2025-05-05,false
+CRM-0081,Tammy,Ballard,tammy.ballard[at]example.com,609-555-5930,0481 Richardson Summit,Brendastad,MN,55222,US,2025-10-09,2025-04-23,false
+CRM-0082,Emily,Ruiz,emily.ruiz@example.com,425-555-2266,317 Banks Crescent Apt. 004,Wilsonbury,RI,02938,US,2025-10-20,2025-03-02,false
+CRM-0083,Derek,Chavez,derek.chavez@example.com,722-555-8085,261 Gilbert Harbors Apt. 537,Sampsonstad,TN,37213,US,2025-12-10,2025-03-23,false
+CRM-0084,Tina,Richardson,tina.richardson@example.com,294-555-0771,64317 Elizabeth Row Apt. 053,Port Anne,SD,57071,US,2025-03-24,2025-02-05,false
+CRM-0085,Maria,Spencer,maria.spencer@example.com,811-555-1040,52904 Vanessa Plains,Laurenville,OR,97677,US,2025-08-25,2025-04-09,false
+CRM-0086,Michelle,Anderson,michelle.anderson@example.com,212-555-1876,502 Williams Streets,Foxland,MI,48976,US,2025-08-08,2025-01-17,false
+CRM-0087,Shane,Cox,shane.cox@example.com,646-555-2591,8390 Ellis Burgs,South Melaniechester,OR,97703,US,2026-02-22,2025-03-26,false
+CRM-0088,Daniel,Joseph,daniel.joseph@example.com,720-555-1743,59212 Weber Prairie,Oscarhaven,NV,89202,US,2026-04-23,2025-04-17,false
+CRM-0089,Shawn,Jacobs,shawn.jacobs@example.com,753-555-8689,836 Beasley Loop,Mariafurt,CT,06213,US,2025-07-31,2025-04-18,false
+CRM-0090,Jessica,Edwards,jessica.edwards@example.com,446-555-0949,2711 Christopher Court Suite 280,Elizabethchester,MD,21536,US,2026-08-22,2025-01-06,false
+CRM-0091,Morgan,Pugh,morgan.pugh@example.com,985-555-2060,9451 Eric Orchard,Port Daniel,NE,68109,US,2026-01-25,2025-05-03,false
+CRM-0092,Angela,Wilson,angela.wilson@example.com,634-555-3470,8998 Chelsea Shoals,Anthonyview,KY,41268,US,2025-12-27,2025-03-18,false
+CRM-0093,Sandra,Bell,sandra.bell@example.com,649-555-8479,612 Christopher Pines,South Robert,HI,96788,US,2026-03-06,2025-05-18,false
+CRM-0094,Eric,Collins,eric.collins@example.com,803-555-9075,22901 Ramos Manors,Lawsonchester,MD,21371,US,2025-08-14,2025-05-05,false
+CRM-0095,Jason,Hunt,jason.hunt@example.com,436-555-9641,49784 Jeffrey Rapid Apt. 034,Port Derrick,MI,48524,US,2025-08-13,2025-03-11,false
+CRM-0096,Keith,Wilson,keith.wilson@example.com,426-555-0117,26838 Jones Wall Apt. 607,Port Lawrencechester,NM,88175,US,2026-03-23,2025-05-05,false
+CRM-0097,Richard,Bowman,richard.bowman@example.com,273-555-0964,0529 Collier Lake,South Meganbury,LA,70893,US,2025-01-30,2025-04-10,false
+CRM-0098,Brianna,Warren,brianna.warren[at]example.com,435-555-1104,535 Charles Roads Apt. 883,Michaelberg,MO,63968,US,2025-12-11,2025-04-14,false
+CRM-0099,Curtis,Scott,curtis.scott@example.com,233-555-5413,127 Webster Trace,Maldonadoshire,HI,96865,US,2025-06-19,2025-04-30,false
+CRM-0100,Cynthia,Weber,cynthia.weber@example.com,273-555-8423,71774 Vargas Knoll Apt. 477,North Miguelport,SC,29079,US,2025-05-11,2025-05-17,false
+CRM-0101,Deanna,Madden,deanna.madden@example.com,444-555-4562,9807 Marc Mountains Apt. 071,Toniland,CO,81034,US,2025-01-28,2025-04-11,false
+CRM-0102,Debbie,Williams,debbie.williams@example.com,886-555-7953,8892 Watson Haven Suite 659,Port Crystalmouth,VT,05034,US,2026-08-01,2025-01-07,false
+CRM-0103,Mark,Grant,mark.grant@example.com,420-555-8834,9251 Sabrina Inlet Suite 291,Angelicamouth,MS,38862,US,2025-03-27,2025-04-20,false
