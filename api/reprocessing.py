@@ -102,6 +102,11 @@ PY_TRANSFORMS = {
     "none": lambda v: v,
     "normalize_email": lambda v: (v or "").strip().lower(),
     "normalize_phone": lambda v: re.sub(r"[^0-9]", "", v or ""),
+    # New (Product domain onboarding): strips everything but letters/digits and
+    # uppercases -- so "ABC-1234" and "abc1234" compare equal as the same
+    # manufacturer_part_number even though each source is allowed to keep its
+    # own dash/case convention in the stored (silver/gold) value.
+    "normalize_code": lambda v: re.sub(r"[^0-9A-Za-z]", "", v or "").upper(),
 }
 
 # Each lambda takes a SQL EXPRESSION (not necessarily a bare column name --
@@ -110,6 +115,7 @@ SQL_TRANSFORMS = {
     "none": lambda expr: expr,
     "normalize_email": lambda expr: f"lower(trim({expr}))",
     "normalize_phone": lambda expr: f"regexp_replace(coalesce({expr},''), '[^0-9]', '', 'g')",
+    "normalize_code": lambda expr: f"upper(regexp_replace(coalesce({expr},''), '[^0-9A-Za-z]', '', 'g'))",
 }
 
 
@@ -151,26 +157,34 @@ def _load_survivorship_rules(domain_key):
 # Handler registry for survivorship rule_type, mirroring RULE_TYPE_HANDLERS in
 # api/validation.py and dbt's macros/rule_type_expr.sql (used by
 # gold_survivorship_winners.sql's CASE dispatch). Each handler takes
-# (raw_value, clean_value, modified_date, rule_param, freq) and returns a
-# numeric score -- higher wins, per-candidate, for one attribute_key. This is
-# the real-time reprocessing path's equivalent of that dbt model's `when`
-# branches, and the two MUST stay in lockstep (same rule_type -> same
+# (raw_value, clean_value, modified_date, rule_param, freq, source_system) and
+# returns a numeric score -- higher wins, per-candidate, for one attribute_key.
+# This is the real-time reprocessing path's equivalent of that dbt model's
+# `when` branches, and the two MUST stay in lockstep (same rule_type -> same
 # ranking): adding a new rule_type here without also adding it there (or vice
 # versa) would silently make the two paths disagree on who wins an attribute.
+#
+# source_system was added to every handler's signature (Product domain
+# onboarding) for 'source_priority' below -- every earlier rule_type ranks by
+# a property of the VALUE and ignores it, 'source_priority' is the first one
+# that ranks by a property of the candidate's SOURCE instead.
 SURVIVORSHIP_RANK_HANDLERS = {
-    "newest": lambda v, clean_v, modified_date, rule_param, freq: _epoch(modified_date),
-    "oldest": lambda v, clean_v, modified_date, rule_param, freq: -_epoch(modified_date),
-    "most_complete": lambda v, clean_v, modified_date, rule_param, freq: (
+    "newest": lambda v, clean_v, modified_date, rule_param, freq, source_system: _epoch(modified_date),
+    "oldest": lambda v, clean_v, modified_date, rule_param, freq, source_system: -_epoch(modified_date),
+    "most_complete": lambda v, clean_v, modified_date, rule_param, freq, source_system: (
         1 if clean_v is not None else 0
     ),
-    "pattern_match": lambda v, clean_v, modified_date, rule_param, freq: (
+    "pattern_match": lambda v, clean_v, modified_date, rule_param, freq, source_system: (
         1 if clean_v is not None and rule_param and re.search(rule_param, str(v)) else 0
     ),
-    "most_common": lambda v, clean_v, modified_date, rule_param, freq: (
+    "most_common": lambda v, clean_v, modified_date, rule_param, freq, source_system: (
         freq.get(clean_v, 0) if clean_v is not None else 0
     ),
-    "shortest_value": lambda v, clean_v, modified_date, rule_param, freq: (
+    "shortest_value": lambda v, clean_v, modified_date, rule_param, freq, source_system: (
         -1 * len(clean_v) if clean_v is not None else -999999
+    ),
+    "source_priority": lambda v, clean_v, modified_date, rule_param, freq, source_system: (
+        1 if rule_param is not None and source_system == rule_param else 0
     ),
 }
 
@@ -213,7 +227,8 @@ def _pick_attribute_winners(candidates, rules, source_priority):
             raise ValueError(
                 f"Unrecognized survivorship rule_type '{rule_type}' for attribute_key '{attr}' -- "
                 f"no handler registered in reprocessing.SURVIVORSHIP_RANK_HANDLERS. "
-                f"Known rule_types: {', '.join(sorted(SURVIVORSHIP_RANK_HANDLERS))}."
+                f"Known rule_types: {', '.join(sorted(SURVIVORSHIP_RANK_HANDLERS))}. "
+                f"(Also update dbt_project/models/gold/gold_survivorship_winners.sql -- the two must stay in lockstep.)"
             )
 
         freq = {}
@@ -226,7 +241,7 @@ def _pick_attribute_winners(candidates, rules, source_priority):
         def rank_key(c, handler=handler, rule_param=rule_param, freq=freq, attr=attr):
             v = c["data"].get(attr)
             clean_v = (str(v).strip() if v is not None else "") or None
-            return handler(v, clean_v, c["modified_date"], rule_param, freq)
+            return handler(v, clean_v, c["modified_date"], rule_param, freq, c["source_system"])
 
         def sort_key(c, attr=attr):
             source_pref = source_priority.get(c["source_system"], 999999)

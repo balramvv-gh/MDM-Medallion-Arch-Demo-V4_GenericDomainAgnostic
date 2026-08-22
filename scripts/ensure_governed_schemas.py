@@ -107,6 +107,213 @@ DEFAULT_SURVIVORSHIP_RULES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Product domain onboarding: bus_rules seed data for domain_key='product'.
+# Unlike DEFAULT_COLUMN_RULES/MATCHING_RULES/MATCHING_THRESHOLDS/
+# SURVIVORSHIP_RULES above (Customer's original rows, inserted without a
+# domain_key -- domain_key is backfilled afterward by
+# migrate_column_rules_to_domain.py / migrate_matching_rules_to_domain.py),
+# these Product rows carry domain_key/attribute_key directly at insert time,
+# since Product is being onboarded after those two migration scripts already
+# exist -- there is no "pre-domain-key" era to replay for a brand-new domain.
+#
+# Seeded by ensure_product_bus_rules() below via PER-RULE_ID existence
+# checks, NOT the whole-table-empty gate ensure_bus_rules_tables() uses above
+# -- a live database already has Customer rows in every one of these four
+# tables, so a whole-table-empty check would never fire again and Product's
+# rows would silently never be inserted. See that function's docstring.
+# ---------------------------------------------------------------------------
+
+# Column rules (validation): 5 rules per source system, covering the
+# attributes most load-bearing for matching (manufacturer_part_number,
+# product_name) and a few of each source's own asymmetric attributes.
+# Mirrors DEFAULT_COLUMN_RULES' shape/rule_type vocabulary exactly -- no new
+# rule_type introduced here, only new rows (not_null/regex/reference_country
+# reject a bad record; trim_case_proper corrects one in place, same as
+# Customer's R006/R007).
+DEFAULT_PRODUCT_COLUMN_RULES = [
+    # rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description
+    ("R100", "product", "product_name", "ERP", "item_description", "not_null", None, "reject", "Product name is required"),
+    ("R101", "product", "manufacturer_part_number", "ERP", "mfr_part_no", "not_null", None, "reject", "Manufacturer part number is required"),
+    ("R102", "product", "list_price", "ERP", "unit_price", "regex", r"^\d+(\.\d{1,2})?$", "reject", "List price must be a positive number with up to 2 decimal places"),
+    ("R103", "product", "supplier_id", "ERP", "vendor_id", "not_null", None, "reject", "Supplier ID is required"),
+    ("R104", "product", "product_status", "ERP", "item_status", "trim_case_proper", None, "correct", "Trim whitespace and apply proper case"),
+    ("R105", "product", "product_name", "PLM", "part_name", "not_null", None, "reject", "Product name is required"),
+    ("R106", "product", "manufacturer_part_number", "PLM", "mpn", "not_null", None, "reject", "Manufacturer part number is required"),
+    ("R107", "product", "weight_kg", "PLM", "weight_kg", "regex", r"^\d+(\.\d+)?$", "reject", "Weight must be a positive numeric value"),
+    ("R108", "product", "country_of_origin", "PLM", "origin_country", "reference_country", None, "reject", "Country of origin must be a valid ISO country code"),
+    ("R109", "product", "manufacturer_name", "PLM", "mfr_name", "trim_case_proper", None, "correct", "Trim whitespace and apply proper case"),
+    ("R110", "product", "product_name", "SUPPLIER", "product_title", "not_null", None, "reject", "Product name is required"),
+    ("R111", "product", "supplier_id", "SUPPLIER", "vendor_account_id", "not_null", None, "reject", "Supplier account ID is required"),
+    ("R112", "product", "lead_time_days", "SUPPLIER", "lead_time", "regex", r"^\d+$", "reject", "Lead time must be a whole number of days"),
+    ("R113", "product", "minimum_order_qty", "SUPPLIER", "moq", "regex", r"^\d+$", "reject", "Minimum order quantity must be a whole number"),
+    ("R114", "product", "country_of_origin", "SUPPLIER", "country_of_mfg", "reference_country", None, "reject", "Country of origin must be a valid ISO country code"),
+]
+
+# Matching rules: manufacturer_part_number is the sole tier-1 exact key
+# (normalized via the new 'normalize_code' transform_function -- strips
+# non-alphanumerics and upper-cases, so "MPN-4471-A" and "mpn4471a" compare
+# equal); product_name/manufacturer_name feed tier-2's TF-IDF similarity
+# text; category is tier-2's blocking key (mirrors Customer's MR001-MR008
+# shape exactly, just scoped to domain_key='product' and Product's own
+# attribute names).
+DEFAULT_PRODUCT_MATCHING_RULES = [
+    # rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description
+    ("MR100", "product", "manufacturer_part_number", "MT101", "exact_match_field", 1, "manufacturer_part_number", "normalize_code",
+     "Normalized (uppercased, alphanumeric-only) manufacturer part number must match exactly"),
+    ("MR101", "product", "product_name", "MT102", "similarity_text_field", 1, "product_name", "none",
+     "Included in the concatenated text used for TF-IDF similarity scoring"),
+    ("MR102", "product", "manufacturer_name", "MT102", "similarity_text_field", 2, "manufacturer_name", "none",
+     "Included in the concatenated text used for TF-IDF similarity scoring"),
+    ("MR103", "product", "category", "MT102", "blocking_key", 1, "category", "none",
+     "Candidate pairs are only compared within the same blocking key value, to avoid O(n^2) comparisons at scale."),
+]
+
+DEFAULT_PRODUCT_MATCHING_THRESHOLDS = [
+    # tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier, auto_merge_threshold, review_lower_threshold, description
+    ("MT100", "product", 0, "No-Match Baseline", "no_match_baseline", False, 0.50, None,
+     "Not a real matching tier -- confidence assigned to a single-source golden record with no corroborating match from any tier (\"provisional\")"),
+    ("MT101", "product", 1, "Tier 1: Exact Match", "exact", True, 1.00, None,
+     "Two products are the same if they share an exact match on manufacturer_part_number (see matching_rules MR100) after normalize_code is applied. Binary -- confidence is always this tier's auto_merge_threshold."),
+    ("MT102", "product", 2, "Tier 2: Fuzzy Similarity Match", "fuzzy_tfidf_cosine", True, 0.80, 0.60,
+     "Candidate pairs within the same category (blocking_key, MR103) are scored by TF-IDF character n-gram cosine similarity over the concatenated product_name/manufacturer_name text. score >= auto_merge_threshold auto-merges; review_lower_threshold <= score < auto_merge_threshold is queued to the Match Review queue; score < review_lower_threshold is not a candidate at all. review_lower_threshold is higher than Customer's 0.35 (MT002) deliberately: with only a handful of distinct product component types per category, unrelated products sharing a category and component word can otherwise cross a lower bar purely on that shared vocabulary -- 0.60 was calibrated against this domain's own generated data (see data/generate_product_source_data.py) to keep the Match Review queue to genuinely plausible candidates."),
+]
+
+# One rule per Product attribute that participates in survivorship (the 18
+# non-structural attributes -- source_created_date/source_modified_date, like
+# Customer's, have no survivorship rule and fall back to the universal
+# tie-break). Deliberately varied across every rule_type this project
+# supports, including the new 'source_priority' ("select if source is X")
+# the user asked for by name, so the demo shows every rule_type in one place:
+#   newest          -- product_name
+#   oldest          -- category
+#   pattern_match   -- engineering_spec_version (prefers the well-formed "REV-n.n" shape)
+#   shortest_value  -- color (prefers the more concise value over verbose marketing text)
+#   most_common     -- unit_of_measure, country_of_origin
+#   most_complete   -- manufacturer_name, weight_kg, material, supplier_id, supplier_part_number
+#   source_priority -- manufacturer_part_number/lifecycle_status (PLM); list_price/
+#                      currency_code/product_status (ERP); lead_time_days/
+#                      minimum_order_qty (SUPPLIER)
+#
+# Rule-type choice per attribute is NOT arbitrary -- it depends on which of
+# ERP/PLM/SUPPLIER actually map that attribute (see DEFAULT_PRODUCT_SOURCE_FIELD_MAPPINGS
+# above), because gold_survivorship_winners.sql's per-attribute unpivot emits
+# a row (with a NULL value) for EVERY contributing source record, even one
+# whose source_field_mappings has no row at all for that attribute. 'newest'/
+# 'oldest' rank purely by date, blind to whether the value itself is
+# populated -- safe ONLY for product_name/manufacturer_part_number/category,
+# the three attributes every one of ERP/PLM/SUPPLIER maps, where that NULL
+# case can never arise. For every other (asymmetrically-mapped) attribute,
+# this uses 'most_complete' (prefers non-blank, safe regardless of which
+# source combination happens to make up a match group) or 'source_priority'
+# naming the attribute's ONE sole mapping source (also always safe: the sole
+# mapper is the only row that can ever score a match on source identity, so
+# it wins outright whether or not any other, non-mapping source's row in the
+# same group happens to be null). 'most_common'/'shortest_value' are safe for
+# any attribute already, since both explicitly exclude a blank/null value
+# from ever "winning" (see this file's SQL for the exact scoring logic).
+DEFAULT_PRODUCT_SURVIVORSHIP_RULES = [
+    # rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description
+    ("SR100", "product", "product_name", "product_name", "newest", None,
+     "Most recently modified source wins (safe here: ERP/PLM/Supplier all map product_name)"),
+    ("SR101", "product", "manufacturer_part_number", "manufacturer_part_number", "source_priority", "PLM",
+     "PLM (engineering) is this demo's system of record for the manufacturer part number"),
+    ("SR102", "product", "manufacturer_name", "manufacturer_name", "most_complete", None,
+     "Prefers a populated manufacturer name over a blank one -- ERP does not carry this attribute at all"),
+    ("SR103", "product", "category", "category", "oldest", None,
+     "Category classification is set at initial product creation and rarely reclassified afterward -- "
+     "the earliest recorded value is treated as authoritative (safe here: ERP/PLM/Supplier all map category)"),
+    ("SR104", "product", "unit_of_measure", "unit_of_measure", "most_common", None,
+     "The non-blank value that appears in the most contributing source records wins"),
+    ("SR105", "product", "list_price", "list_price", "source_priority", "ERP",
+     "ERP is this demo's sole source of commercial pricing"),
+    ("SR106", "product", "currency_code", "currency_code", "source_priority", "ERP",
+     "ERP is this demo's sole source of commercial pricing"),
+    ("SR107", "product", "product_status", "product_status", "source_priority", "ERP",
+     "ERP's commercial lifecycle status is authoritative"),
+    ("SR108", "product", "lifecycle_status", "lifecycle_status", "source_priority", "PLM",
+     "PLM's engineering lifecycle status is authoritative"),
+    ("SR109", "product", "weight_kg", "weight_kg", "most_complete", None,
+     "Prefers a populated weight over a blank one -- ERP's free-text gross_weight can fail numeric_extract, "
+     "and Supplier does not carry this attribute at all"),
+    ("SR110", "product", "material", "material", "most_complete", None,
+     "Prefers a populated material spec over a blank one -- ERP does not carry this attribute at all"),
+    ("SR111", "product", "color", "color", "shortest_value", None,
+     "Prefers the more concise value across sources over verbose supplier marketing text"),
+    ("SR112", "product", "country_of_origin", "country_of_origin", "most_common", None,
+     "The non-blank value that appears in the most contributing source records wins"),
+    ("SR113", "product", "supplier_id", "supplier_id", "most_complete", None,
+     "Prefers a populated supplier ID over a blank one -- PLM does not carry this attribute at all"),
+    ("SR114", "product", "supplier_part_number", "supplier_part_number", "most_complete", None,
+     "Prefers a populated supplier part number over a blank one -- PLM does not carry this attribute at all"),
+    ("SR115", "product", "lead_time_days", "lead_time_days", "source_priority", "SUPPLIER",
+     "Only Supplier carries this attribute -- always defers to Supplier's own reported value"),
+    ("SR116", "product", "minimum_order_qty", "minimum_order_qty", "source_priority", "SUPPLIER",
+     "Only Supplier carries this attribute -- always defers to Supplier's own reported value"),
+    ("SR117", "product", "engineering_spec_version", "engineering_spec_version", "pattern_match", r"^REV-\d+(\.\d+)?$",
+     "Prefers a value matching the standard \"REV-<major>[.<minor>]\" format over a malformed one "
+     "(safe in practice: only PLM carries this attribute, and its generated values always match)"),
+]
+
+
+def ensure_product_bus_rules(con):
+    """Seeds Product's bus_rules rows (DEFAULT_PRODUCT_COLUMN_RULES/
+    MATCHING_RULES/MATCHING_THRESHOLDS/SURVIVORSHIP_RULES) into an
+    already-provisioned bus_rules schema, using a PER-RULE_ID existence
+    check -- unlike ensure_bus_rules_tables() above, which only seeds
+    DEFAULT_COLUMN_RULES/etc. the first time (a whole-table-empty check).
+    On a live database that already has Customer's rows in every one of
+    these four tables, that whole-table-empty check will never fire again,
+    so simply appending Product's rows to those same DEFAULT_* lists would
+    silently never insert them. This function is the fix: it runs every
+    time (idempotent, like every other *_bus_rules helper in this file) and
+    inserts only the rule_ids that don't already exist yet.
+
+    Called from main(), after ensure_bus_rules_tables() so the tables
+    already exist. Must be mirrored in api/db.py's _ensure_product_bus_rules
+    -- see that file's module docstring for the "kept in sync" convention."""
+    existing_column_rules = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.column_rules").fetchall())
+    for rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description in DEFAULT_PRODUCT_COLUMN_RULES:
+        if rule_id in existing_column_rules:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.column_rules
+                (rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description))
+
+    existing_matching_rules = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.matching_rules").fetchall())
+    for rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description in DEFAULT_PRODUCT_MATCHING_RULES:
+        if rule_id in existing_matching_rules:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.matching_rules
+                (rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description))
+
+    existing_thresholds = set(r[0] for r in con.execute("SELECT tier_id FROM bus_rules.matching_thresholds").fetchall())
+    for tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier, auto_merge_threshold, review_lower_threshold, description in DEFAULT_PRODUCT_MATCHING_THRESHOLDS:
+        if tier_id in existing_thresholds:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.matching_thresholds
+                (tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier,
+                 auto_merge_threshold, review_lower_threshold, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier, auto_merge_threshold, review_lower_threshold, description))
+
+    existing_survivorship = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.survivorship_rules").fetchall())
+    for rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description in DEFAULT_PRODUCT_SURVIVORSHIP_RULES:
+        if rule_id in existing_survivorship:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.survivorship_rules
+                (rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description))
+
+
 def ensure_reference_tables(con):
     con.execute("CREATE SCHEMA IF NOT EXISTS ref;")
     con.execute("""
@@ -139,9 +346,24 @@ def ensure_reference_tables(con):
 
 def ensure_bus_rules_tables(con):
     con.execute("CREATE SCHEMA IF NOT EXISTS bus_rules;")
+    # Phase 2/3 (domain-agnostic) parity fix: domain_key/attribute_key are now
+    # baked directly into CREATE TABLE here, matching api/db.py's
+    # _ensure_bus_rules_tables -- this script's copy had drifted and lacked
+    # them entirely (they were only ever added via ALTER TABLE ADD COLUMN by
+    # scripts/migrate_column_rules_to_domain.py / migrate_matching_rules_to_domain.py,
+    # which run AFTER this script in scripts/build_pipeline.py's step order).
+    # Baking them in here means a brand-new database gets the correct shape
+    # immediately -- needed so ensure_product_bus_rules() below (called later
+    # in this same script's main()) can insert domain_key='product' rows
+    # without waiting on those two migration scripts to run first. Harmless
+    # for an existing table: CREATE TABLE IF NOT EXISTS is a no-op there, and
+    # the migration scripts' idempotent ALTER TABLE ADD COLUMN IF NOT EXISTS
+    # already carry that shape forward regardless.
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.column_rules (
             rule_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
+            attribute_key VARCHAR,
             source_system VARCHAR,
             source_column VARCHAR,
             rule_type VARCHAR,
@@ -157,6 +379,8 @@ def ensure_bus_rules_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.matching_rules (
             rule_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
+            attribute_key VARCHAR,
             tier_id VARCHAR,
             rule_role VARCHAR,
             rule_order INTEGER,
@@ -172,6 +396,7 @@ def ensure_bus_rules_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.matching_thresholds (
             tier_id VARCHAR PRIMARY KEY,
+            domain_key VARCHAR,
             tier_order INTEGER,
             tier_name VARCHAR,
             match_method VARCHAR,
@@ -188,7 +413,9 @@ def ensure_bus_rules_tables(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS bus_rules.survivorship_rules (
             rule_id VARCHAR PRIMARY KEY,
-            target_column VARCHAR UNIQUE,
+            domain_key VARCHAR,
+            attribute_key VARCHAR,
+            target_column VARCHAR,
             rule_type VARCHAR,
             rule_param VARCHAR,
             active BOOLEAN DEFAULT true,
@@ -287,13 +514,25 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
             {"key": "is_active", "label": "Status", "type": "boolean"},
         ]),
     ),
+    # Phase 4 (domain-agnostic) parity fix: every rules_config field_schema
+    # below now adds domain_key/attribute_key as plain text fields, instead
+    # of a hardcoded 'select' of literal Customer domain/attribute names
+    # (source_system used to be a CRM/ERP-only select; target_column used to
+    # be a select hardcoding Customer's 10 attribute names) -- this brings
+    # this script's copy up to parity with api/db.py's DEFAULT_ENTITY_TYPE_REGISTRY,
+    # which already generalized this. A steward types the domain_key/
+    # attribute_key value directly; GET /api/v1/domains and
+    # GET /api/v1/rules-config/... already expose the live governed lists for
+    # a frontend to render as an actual dropdown without any hardcoding here.
     (
         "column_rule", "rules_config", "Column Rules", "Column Rule",
         "bus_rules.column_rules", "rule_id", "rule_id", "CR", "rules_config_change",
         None, 1,
         json.dumps([
-            {"key": "source_system", "label": "Source System", "type": "select", "options": ["CRM", "ERP"]},
-            {"key": "source_column", "label": "Source Column", "type": "text"},
+            {"key": "domain_key", "label": "Domain", "type": "text"},
+            {"key": "attribute_key", "label": "Attribute", "type": "text"},
+            {"key": "source_system", "label": "Source System", "type": "text"},
+            {"key": "source_column", "label": "Source Column (legacy, reference only)", "type": "text"},
             {"key": "rule_type", "label": "Rule Type", "type": "select", "options": [
                 "not_null", "regex", "reference_state", "reference_country",
                 "trim_case_proper", "standardize_phone_us", "lowercase",
@@ -309,13 +548,15 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
         "bus_rules.matching_rules", "rule_id", "rule_id", "MR", "rules_config_change",
         None, 2,
         json.dumps([
+            {"key": "domain_key", "label": "Domain", "type": "text"},
+            {"key": "attribute_key", "label": "Attribute", "type": "text"},
             {"key": "tier_id", "label": "Tier ID", "type": "text"},
             {"key": "rule_role", "label": "Rule Role", "type": "select",
              "options": ["exact_match_field", "similarity_text_field", "blocking_key"]},
             {"key": "rule_order", "label": "Rule Order", "type": "number"},
-            {"key": "source_column", "label": "Source Column", "type": "text"},
+            {"key": "source_column", "label": "Source Column (legacy, reference only)", "type": "text"},
             {"key": "transform_function", "label": "Transform Function", "type": "select",
-             "options": ["none", "normalize_email", "normalize_phone"]},
+             "options": ["none", "normalize_email", "normalize_phone", "normalize_code"]},
             {"key": "description", "label": "Description", "type": "text"},
             {"key": "is_active", "label": "Status", "type": "boolean"},
         ]),
@@ -325,13 +566,14 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
         "bus_rules.matching_thresholds", "tier_id", "tier_order", "MT", "rules_config_change",
         None, 3,
         json.dumps([
+            {"key": "domain_key", "label": "Domain", "type": "text"},
             {"key": "tier_order", "label": "Tier Order", "type": "number"},
             {"key": "tier_name", "label": "Tier Name", "type": "text"},
             # Phase 0 upgraded match_method from unconstrained free text to a
             # select constrained to methods scripts/generate_matches.py
             # actually implements -- see RULES_FIELD_OPTIONS in api/main.py.
             {"key": "match_method", "label": "Match Method", "type": "select",
-             "options": ["exact", "fuzzy_tfidf_cosine"]},
+             "options": ["exact", "fuzzy_tfidf_cosine", "no_match_baseline"]},
             {"key": "is_match_tier", "label": "Is Match Tier", "type": "boolean"},
             {"key": "auto_merge_threshold", "label": "Auto-Merge Threshold", "type": "number"},
             {"key": "review_lower_threshold", "label": "Review Lower Threshold", "type": "number"},
@@ -344,13 +586,12 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
         "bus_rules.survivorship_rules", "rule_id", "rule_id", "SR", "rules_config_change",
         None, 4,
         json.dumps([
-            {"key": "target_column", "label": "Target Column", "type": "select", "options": [
-                "first_name", "last_name", "email", "phone", "address_line1",
-                "address_line2", "city", "state_code", "postal_code", "country_code",
-            ]},
+            {"key": "domain_key", "label": "Domain", "type": "text"},
+            {"key": "attribute_key", "label": "Attribute", "type": "text"},
+            {"key": "target_column", "label": "Target Column (legacy, reference only)", "type": "text"},
             {"key": "rule_type", "label": "Rule Type", "type": "select",
-             "options": ["most_common", "most_complete", "oldest", "newest", "pattern_match", "shortest_value"]},
-            {"key": "rule_param", "label": "Rule Param (pattern_match only, a regex)", "type": "text"},
+             "options": ["most_common", "most_complete", "oldest", "newest", "pattern_match", "shortest_value", "source_priority"]},
+            {"key": "rule_param", "label": "Rule Param (pattern_match: a regex; source_priority: the preferred source_system_key)", "type": "text"},
             {"key": "description", "label": "Description", "type": "text"},
             {"key": "is_active", "label": "Status", "type": "boolean"},
         ]),
@@ -525,11 +766,26 @@ def ensure_entity_type_registry(con):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, row)
 
+    # field_schema can drift from DEFAULT_ENTITY_TYPE_REGISTRY as this file
+    # evolves (e.g. Product onboarding added domain_key/attribute_key fields
+    # and new rule_type/transform_function/match_method options) -- this
+    # table has no write endpoint anywhere in the API, so re-syncing every
+    # row's field_schema to the current DEFAULT_ENTITY_TYPE_REGISTRY on every
+    # run is always safe. Mirrors api/db.py's _ensure_entity_type_registry,
+    # which already had this resync loop -- this script's copy did not,
+    # until now.
+    for row in DEFAULT_ENTITY_TYPE_REGISTRY:
+        con.execute(
+            "UPDATE governance.entity_type_registry SET field_schema = ? WHERE entity_type = ?",
+            [row[-1], row[0]],
+        )
+
 
 def main():
     con = duckdb.connect(DB_PATH)
     ensure_reference_tables(con)
     ensure_bus_rules_tables(con)
+    ensure_product_bus_rules(con)
     ensure_orchestration_tables(con)
     ensure_monitoring_tables(con)
     ensure_entity_type_registry(con)

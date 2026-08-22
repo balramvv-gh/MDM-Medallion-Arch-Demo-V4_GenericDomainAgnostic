@@ -11,11 +11,17 @@ other, and who may access them are all **governed metadata**
 (`governance.domain_registry`/`domain_attributes`/`domain_source_systems`/
 `domain_relationships`/`user_domain_access`), the same "rules live as data, not code"
 philosophy this project already used for `bus_rules.column_rules`. Today the demo
-ships one domain with a real, tested, end-to-end pipeline — **Customer**, matched and
-merged from CRM and ERP source systems — plus a second, **Product**, seeded purely as
-metadata (no pipeline yet) so the platform's shape is visible even with only one live
-domain. Onboarding a genuinely new domain is a metadata change (rows in the tables
-above, plus source data and a rules configuration), not a code change.
+ships **two** domains with real, tested, end-to-end pipelines: **Customer** (matched
+and merged from CRM and ERP source systems) and **Product** (matched and merged from
+ERP, PLM, and a supplier spreadsheet source — see "Product domain" below). Product
+started life as inert `domain_registry` metadata with no pipeline behind it, kept
+that way on purpose to prove the platform's shape without needing a second full
+dataset; it was then onboarded for real using exactly the additive, metadata-driven
+process this generalization was built to support — new governance rows, two new
+rule-type branches, one new file, and no rewrite of any existing model or script.
+Onboarding a genuinely new domain (or extending an existing one, as Product's own
+onboarding showed) is a metadata change plus source data and a rules configuration,
+not a rewrite of existing code.
 
 ## What this demonstrates
 
@@ -71,7 +77,7 @@ above, plus source data and a rules configuration), not a code change.
   (`gold_survivorship_winners.sql`), each is independently won by whichever
   contributing source best satisfies that attribute's own rule in
   `bus_rules.survivorship_rules` (most common / most complete / oldest / newest /
-  pattern match / shortest value), tie-broken by most-recently-modified then
+  pattern match / shortest value / source priority), tie-broken by most-recently-modified then
   `domain_source_systems.sort_order`. A **crosswalk table**
   (`gold.gold_crosswalk`) preserves the link between every golden record and its
   contributing source records — including, per source, exactly which attributes it
@@ -79,6 +85,40 @@ above, plus source data and a rules configuration), not a code change.
   from governed metadata. **Golden IDs are domain-qualified**
   (`GOLD-CUSTOMER-00001`, not a flat `GOLD-00001`) since a match_group_id is only
   unique within one domain's own matching run.
+- **Product domain** — the platform's second domain, onboarded after the metadata
+  foundation above was built, using exactly the additive process it was designed
+  for: new governance metadata plus two genuinely new, reusable rule types, not a
+  rewrite of any existing pipeline code. Three source systems instead of Customer's
+  two — **ERP** (commercial/operational attributes), **PLM** (engineering
+  attributes), and **SUPPLIER** (the supplier's own spec sheet) — landing as
+  CSV/CSV/XLSX respectively (`load_bronze.py` gained a `file_type: 'xlsx'` source
+  config, read via `pandas.read_excel` and registered as a DuckDB view; every other
+  loader behavior — watermark filtering, batch logging, full-vs-incremental
+  detection — is unchanged). A 20-attribute schema with deliberately asymmetric
+  field-mapping coverage across the three sources (mirroring how a real
+  commercial/engineering/supplier-catalog split works — some attributes come from
+  all three sources, most come from only one or two), driving a new field-mapping
+  `transform_function`, `numeric_extract` (pulls the numeric value out of free text
+  like ERP's `"4.20 kg"`). Matching adds a new `transform_function`,
+  `normalize_code` (strips punctuation, uppercases, so differently-formatted part
+  numbers from different sources compare equal) for its tier-1 exact match on
+  `manufacturer_part_number`, plus the same TF-IDF fuzzy tier Customer uses for tier
+  2, blocked on `category` and calibrated with a higher review threshold (0.60 vs.
+  Customer's 0.35) to keep unrelated same-category products with shared vocabulary
+  out of the Match Review queue. Survivorship adds a new `rule_type`,
+  `source_priority` (always take an attribute from a named source when that source
+  is present, regardless of recency), alongside every other
+  `survivorship_rules` rule type the platform already had. A dedicated,
+  deterministic synthetic data generator (`data/generate_product_source_data.py`,
+  ~145 master products, 8 cross-source agreement patterns) exercises singletons,
+  confident auto-merges, suspect matches, and validation failures across all three
+  sources. Verified end-to-end: 130 golden records from 262 source rows (61
+  singletons, 69 auto-merged, 28 in Match Review, 27 rejected to exceptions). Full
+  detail — including the null-safety rationale behind which survivorship rule type
+  suits which attribute, and the one incidental bug fixed in unrelated migration
+  code while onboarding — is in `PROJECT_KNOWLEDGE.md`. **Not yet implemented for
+  Product: incremental loads** — its generator and the bronze load path have only
+  been exercised in full-load mode so far.
 - **Data Stewardship app** (`/app/`) — restricted to `dataSteward` / `dataOwner`
   accounts, four tabs, all metadata-driven off the caller's accessible domain(s). A
   **Dashboard** (the landing tab on login) gives an at-a-glance view of both queues:
@@ -255,22 +295,24 @@ pip install -r requirements.txt
 ### Build the pipeline
 
 ```powershell
-# 1. Generate synthetic source data (CRM + ERP CSV extracts for the Customer
-#    domain, ~100 rows each -- which domain/source each generator targets is
-#    config inside the script, not a CLI argument)
-python data\generate_source_data.py
+# 1. Generate synthetic source data -- which domain/source each generator targets
+#    is config inside the script, not a CLI argument
+python data\generate_source_data.py           # Customer: CRM + ERP CSV, ~100 rows each
+python data\generate_product_source_data.py   # Product: ERP + PLM CSV, SUPPLIER xlsx, ~85-90 rows each
 
 # 2. Land it in the bronze layer (domain_key-tagged, shared bronze.raw_records
-#    table for every domain/source)
+#    table for every domain/source -- one run of load_bronze.py picks up both
+#    Customer's and Product's source files automatically, no extra flag needed)
 python scripts\load_bronze.py
 
 # 3. Build the rest of the pipeline (metadata provisioning -> seed -> silver ->
-#    match/merge -> gold, across every active domain that has a pipeline)
+#    match/merge -> gold, across every active domain that has a pipeline -- today
+#    that's both Customer and Product)
 python scripts\build_pipeline.py
 ```
 
 This is a **full load**: the first run for a given database, since
-`bronze.load_control` (see below) has no history for CRM/ERP yet.
+`bronze.load_control` (see below) has no history for CRM/ERP/PLM/SUPPLIER yet.
 
 #### Incremental loads
 
@@ -309,6 +351,12 @@ python scripts\build_pipeline.py
 ```
 
 Repeatable -- run 3a/3b again any time to simulate another load cycle.
+
+**Product does not support this yet.** `data/generate_product_source_data.py` has
+no `--incremental`/`--full` mode, so only Customer's incremental cycle is
+exercised end-to-end today; Product's `bronze.load_control` rows exist and a full
+load works, but its incremental path is unverified and explicitly deferred. See
+`PROJECT_KNOWLEDGE.md` for detail.
 
 Logical deletes: a deleted source record is filtered out of silver (and so
 never reaches gold) on the next build. If it was the only active source
@@ -448,7 +496,8 @@ uvicorn main:app --reload --port 8000
 Then open in your browser:
 - **MDM Data Hub Portal (login required):** http://localhost:8000/portal/
   — sign in with `mdm_admin` and the password from the step above, then click the
-  **Customer** node on the Home diagram to enter its dashboard.
+  **Customer** or **Product** node on the Home diagram to enter its dashboard (both
+  have live pipelines; see "Product domain" above).
 - **Data Stewardship console:** http://localhost:8000/app/
 - **REST API docs (auto-generated):** http://localhost:8000/docs
 - **Health check:** http://localhost:8000/health
@@ -474,10 +523,13 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 python3 data/generate_source_data.py
+python3 data/generate_product_source_data.py   # Product: ERP + PLM CSV, SUPPLIER xlsx
 python3 scripts/load_bronze.py
 python3 scripts/build_pipeline.py      # metadata provisioning -> seed -> silver -> match/merge -> gold
+                                        # (both Customer and Product, in one run)
 
-# Incremental load (repeatable): python3 data/generate_source_data.py --incremental
+# Incremental load (repeatable, Customer only -- see "Incremental loads" above,
+# Product does not support --incremental yet): python3 data/generate_source_data.py --incremental
 #                                 then load_bronze.py + build_pipeline.py again
 # Forced full reload:             python3 data/generate_source_data.py --full
 #                                 python3 scripts/load_bronze.py --force-full
@@ -585,12 +637,18 @@ queues to report overall pipeline health graded against `governance.monitoring_t
 
 ## Design notes / known simplifications (by design, for demo scope)
 
-- **Scope**: only the **Customer** domain has a real, tested, end-to-end pipeline
-  today. **Product** exists purely as `governance.domain_registry`/
-  `domain_relationships` metadata (`pipeline_status='planned'`) so the Home
-  diagram, domain locking, and "not yet available" handling have a second real
-  domain to demonstrate against — it has no attributes, source systems, or gold
-  data, and every domain-scoped endpoint 409s it.
+- **Scope**: both **Customer** and **Product** now have real, tested, end-to-end
+  pipelines (`pipeline_status='live'` for each). Product was metadata-only
+  (`domain_registry`/`domain_relationships` rows, no attributes, no source
+  systems, no gold data, every domain-scoped endpoint 409ing it) for most of this
+  project's life, kept that way specifically to give the Home diagram, domain
+  locking, and "not yet available" handling a second real domain to demonstrate
+  against without needing a second full dataset — see "Product domain" above for
+  how it was then onboarded for real, additively, on top of the same
+  domain-agnostic platform this section is about. One gap remains open by
+  explicit choice: **Product's incremental load path is not yet implemented** —
+  its generator has no `--incremental` mode and its bronze load path has only
+  been exercised in full-load mode.
 - **Matching is metadata-driven**, the same pattern as `bus_rules.column_rules`: tier
   definitions and thresholds live in `bus_rules.matching_thresholds`,
   and the attributes each tier compares live in `bus_rules.matching_rules`
@@ -631,8 +689,8 @@ queues to report overall pipeline health graded against `governance.monitoring_t
   `scripts/cancel_stale_match_reviews.py` in the batch pipeline.
 - **Survivorship is attribute-level**: for every active attribute of every domain,
   each is picked independently by its own rule in `bus_rules.survivorship_rules`
-  (most common / most complete / oldest / newest / pattern match / shortest value
-  across contributing sources), tie-broken by most recently modified then
+  (most common / most complete / oldest / newest / pattern match / shortest value /
+  source priority across contributing sources), tie-broken by most recently modified then
   `domain_source_systems.sort_order` — see
   `dbt_project/models/gold/gold_survivorship_winners.sql` for the batch evaluation
   and `api/reprocessing.py`'s equivalent for the real-time path.

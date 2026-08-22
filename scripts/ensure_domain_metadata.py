@@ -10,16 +10,29 @@ must be kept in sync with this file's DDL.
 
 Phase 1 is additive-only: it seeds domain_registry with 'customer'
 (pipeline_status='live', reflecting the existing, real bronze/silver/gold
-Customer pipeline) and 'product' (pipeline_status='planned', a metadata-only
-placeholder so the new Home relationship diagram has a second domain/link to
-show -- selecting it in the UI surfaces "not yet available", no real
-pipeline behind it yet). domain_attributes for 'customer' mirrors today's
+Customer pipeline) and 'product' (pipeline_status='live' as of Product
+onboarding -- see below; originally shipped as 'planned', a metadata-only
+placeholder). domain_attributes for 'customer' mirrors today's
 silver_customers/gold_customers column set 1:1. This script does not change
 any existing table's shape or any pipeline behavior; it only adds new
 tables and migrates each auth.users.gold_access value into a parallel
 governance.user_domain_access row scoped to domain_key='customer' -- both
 stay live side by side until Phase 4 cuts the API's read path over to
 user_domain_access.
+
+Product domain onboarding: three synthetic source systems (ERP -- commercial
++ operational attributes, PLM -- engineering attributes, SUPPLIER -- the
+supplier's own spec sheet), each with genuinely different raw field names
+for the same canonical attributes (mirroring the CRM/ERP naming divergence
+already established for Customer), asymmetric field coverage (e.g. only ERP
+carries list_price/currency_code; only PLM carries material/color/
+engineering_spec_version), and one deliberate data-type/format mismatch
+(ERP's gross_weight arrives as free text with a unit, "4.20 kg"; PLM's
+weight_kg is already a clean number) resolved via the new 'numeric_extract'
+source_field_mappings.transform_function (see dbt_project/macros/
+transform_expr.sql). Onboarded the same additive-only way Customer was --
+adding rows here, never editing a dbt model (see macros/active_domain_sources.sql,
+mapped_attributes.sql, validation_block.sql).
 
 Standalone script (not just api/db.py) for the same reason
 ensure_governed_schemas.py is standalone: scripts/build_pipeline.py needs
@@ -44,11 +57,24 @@ DEFAULT_DOMAINS = [
      "Customer master data, matched/merged from CRM and ERP source systems.",
      "live", True, 1),
     ("product", "Product", "Product", "Products",
-     "Product master data (placeholder domain -- metadata only, no pipeline "
-     "yet; demonstrates that the platform is not hardcoded to a single "
-     "domain).",
-     "planned", True, 2),
+     "Product master data, matched/merged from ERP (commercial + operational), "
+     "PLM (engineering), and Supplier (the supplier's own spec sheet) source systems.",
+     "live", True, 2),
 ]
+
+# Existing installs may already have a 'product' row seeded back when it was
+# still pipeline_status='planned' (metadata-only placeholder) -- the
+# insert-if-missing loop below never touches an existing row, so onboarding
+# Product's real pipeline needs an explicit, idempotent flip alongside it.
+# Safe to re-run: a no-op once already 'live'.
+_PRODUCT_PIPELINE_STATUS_UPGRADE_SQL = """
+    UPDATE governance.domain_registry
+    SET pipeline_status = 'live',
+        description = 'Product master data, matched/merged from ERP (commercial + '
+                       'operational), PLM (engineering), and Supplier (the supplier''s '
+                       'own spec sheet) source systems.'
+    WHERE domain_key = 'product' AND pipeline_status != 'live'
+"""
 
 # Canonical attribute set for domain_key='customer', taken 1:1 from today's
 # silver_customers/gold_customers column set. is_matching_field /
@@ -56,18 +82,18 @@ DEFAULT_DOMAINS = [
 # bus_rules.matching_rules rows (MR001-MR008) as descriptive domain
 # metadata; the matching pipeline itself still reads bus_rules.matching_rules
 # directly (Phase 3 wires the two together properly).
+#
+# is_dashboard_breakdown (Phase 4, domain-agnostic): flags which attributes
+# the portal dashboard (GET /api/v1/portal/dashboard/{domain_key}/summary)
+# renders a "count by value" chart for -- replaces the old hardcoded
+# by_state/by_country breakdowns in api/main.py with a generic loop over
+# every attribute flagged here, for any domain. Only state_code/
+# country_code are flagged for customer today (matching the pre-Phase-4
+# dashboard's exact two breakdowns); a future domain enables its own by
+# flagging different attributes -- no API code change needed.
 DEFAULT_CUSTOMER_ATTRIBUTES = [
     # attribute_key, display_label, data_type, is_required, is_matching_field,
     # is_similarity_text_field, is_blocking_key, is_dashboard_breakdown, sort_order
-    #
-    # is_dashboard_breakdown (Phase 4, domain-agnostic): flags which attributes
-    # the portal dashboard (GET /api/v1/portal/dashboard/{domain_key}/summary)
-    # renders a "count by value" chart for -- replaces the old hardcoded
-    # by_state/by_country breakdowns in api/main.py with a generic loop over
-    # every attribute flagged here, for any domain. Only state_code/
-    # country_code are flagged for customer today (matching the pre-Phase-4
-    # dashboard's exact two breakdowns); a future domain enables its own by
-    # flagging different attributes -- no API code change needed.
     ("first_name", "First Name", "string", True, False, True, False, False, 1),
     ("last_name", "Last Name", "string", True, False, True, False, False, 2),
     ("email", "Email", "string", True, True, False, False, False, 3),
@@ -82,18 +108,80 @@ DEFAULT_CUSTOMER_ATTRIBUTES = [
     ("source_modified_date", "Source Modified Date", "date", False, False, False, False, False, 12),
 ]
 
+# Canonical attribute set for domain_key='product'. is_matching_field is set
+# only on manufacturer_part_number (tier-1 exact match key, see
+# bus_rules.matching_rules MR100); is_similarity_text_field on product_name/
+# manufacturer_name (tier-2 fuzzy similarity text, MR101/MR102);
+# is_blocking_key on category (MR103) -- deliberately mirroring how Customer's
+# email/phone vs. first_name/last_name/address vs. state_code are flagged.
+# is_dashboard_breakdown on category/product_status (the two most useful
+# "count by value" breakdowns for a product catalog, same count as Customer's
+# state_code/country_code).
+DEFAULT_PRODUCT_ATTRIBUTES = [
+    # attribute_key, display_label, data_type, is_required, is_matching_field,
+    # is_similarity_text_field, is_blocking_key, is_dashboard_breakdown, sort_order
+    ("product_name", "Product Name", "string", True, False, True, False, False, 1),
+    ("manufacturer_part_number", "Manufacturer Part Number", "string", True, True, False, False, False, 2),
+    ("manufacturer_name", "Manufacturer", "string", False, False, True, False, False, 3),
+    ("category", "Product Category", "string", True, False, False, True, True, 4),
+    ("unit_of_measure", "Unit of Measure", "string", False, False, False, False, False, 5),
+    ("list_price", "List Price", "number", False, False, False, False, False, 6),
+    ("currency_code", "Currency", "string", False, False, False, False, False, 7),
+    ("product_status", "Status", "string", True, False, False, False, True, 8),
+    ("lifecycle_status", "Engineering Lifecycle Status", "string", False, False, False, False, False, 9),
+    ("weight_kg", "Weight (kg)", "number", False, False, False, False, False, 10),
+    ("material", "Material", "string", False, False, False, False, False, 11),
+    ("color", "Color", "string", False, False, False, False, False, 12),
+    ("country_of_origin", "Country of Origin", "string", False, False, False, False, False, 13),
+    ("supplier_id", "Supplier ID", "string", True, False, False, False, False, 14),
+    ("supplier_part_number", "Supplier Part Number", "string", False, False, False, False, False, 15),
+    ("lead_time_days", "Lead Time (Days)", "number", False, False, False, False, False, 16),
+    ("minimum_order_qty", "Minimum Order Qty", "number", False, False, False, False, False, 17),
+    ("engineering_spec_version", "Engineering Spec Version", "string", False, False, False, False, False, 18),
+    ("source_created_date", "Source Created Date", "date", False, False, False, False, False, 19),
+    ("source_modified_date", "Source Modified Date", "date", False, False, False, False, False, 20),
+]
+
+# (domain_key, attribute_key) tuples flagged with is_dashboard_breakdown -- used
+# both by the insert loop below and by the idempotent backfill UPDATE, so the
+# two can never drift from each other.
+_DASHBOARD_BREAKDOWN_ATTRS = {
+    ("customer", "state_code"), ("customer", "country_code"),
+    ("product", "category"), ("product", "product_status"),
+}
+
+# All domains' attribute rows, tagged with their domain_key -- generalizes the
+# insert loop below from "always domain_key='customer'" to "whatever domain_key
+# this row says", the same shape DEFAULT_CUSTOMER_SOURCE_SYSTEMS/
+# DEFAULT_SOURCE_FIELD_MAPPINGS already used (their own domain_key is just the
+# tuple's own first element).
+ALL_DOMAIN_ATTRIBUTES = (
+    [("customer",) + attr for attr in DEFAULT_CUSTOMER_ATTRIBUTES]
+    + [("product",) + attr for attr in DEFAULT_PRODUCT_ATTRIBUTES]
+)
+
 DEFAULT_CUSTOMER_SOURCE_SYSTEMS = [
     # domain_key, source_system_key, display_name, sort_order
     ("customer", "CRM", "CRM", 1),
     ("customer", "ERP", "ERP", 2),
 ]
 
+# Product's three source systems. Lower sort_order wins survivorship's
+# universal tie-break (governance.domain_source_systems.sort_order) whenever a
+# bus_rules.survivorship_rules rule doesn't produce a clean winner -- ERP first
+# since it's this demo's commercial system of record, mirroring the
+# "CRM preferred" -> sort_order convention already established for Customer.
+DEFAULT_PRODUCT_SOURCE_SYSTEMS = [
+    ("product", "ERP", "ERP", 1),
+    ("product", "PLM", "PLM", 2),
+    ("product", "SUPPLIER", "Supplier", 3),
+]
+
 DEFAULT_DOMAIN_RELATIONSHIPS = [
     # relationship_id, domain_a_key, domain_b_key, relationship_label, description
     ("REL001", "customer", "product", "Customer-Product link",
      "Illustrative link between the Customer and Product domains (e.g. "
-     "purchase history) -- Product has no pipeline yet, so this "
-     "relationship is metadata only for now."),
+     "purchase history)."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -101,11 +189,11 @@ DEFAULT_DOMAIN_RELATIONSHIPS = [
 # system's own raw field names (bronze.raw_records.attributes, landed
 # verbatim/untouched) map onto that domain's canonical attribute_keys, plus
 # which standardization transform to apply. Read by
-# dbt_project/macros/source_field_mapping_select.sql at compile time (same
-# "run_query() over a governed table" pattern as column_rule_flags.sql) to
-# generate stg_source_records.sql's per-(domain,source_system) extraction
-# block -- one generic model for every domain/source instead of a
-# hand-written dbt file per source system.
+# dbt_project/macros/mapped_attributes.sql at compile time (same "run_query()
+# over a governed table" pattern as column_rule_flags.sql) to generate
+# stg_source_records.sql's per-(domain,source_system) extraction block -- one
+# generic model for every domain/source instead of a hand-written dbt file
+# per source system.
 #
 # source_expr is a SQL expression over `attributes` (bronze's raw JSON
 # column) -- almost always a plain `attributes->>'raw_col'` extraction, but
@@ -120,7 +208,7 @@ DEFAULT_DOMAIN_RELATIONSHIPS = [
 # transform_function dispatches through
 # dbt_project/macros/transform_expr.sql (mirrors rule_type_expr.sql):
 # 'none' | 'trim' | 'trim_proper_case' | 'upper_trim' | 'lowercase_trim' |
-# 'phone_e164_us'.
+# 'phone_e164_us' | 'numeric_extract'.
 # ---------------------------------------------------------------------------
 
 DEFAULT_SOURCE_FIELD_MAPPINGS = [
@@ -173,6 +261,84 @@ DEFAULT_SOURCE_FIELD_MAPPINGS = [
     ("SFM020", "customer", "CRM", "source_created_date", "attributes->>'created_date'", "none", None),
     ("SFM021", "customer", "CRM", "source_modified_date", "attributes->>'modified_date'", "none", None),
     ("SFM022", "customer", "ERP", "source_modified_date", "attributes->>'last_updated'", "none", None),
+]
+
+# Product domain: three sources with genuinely different raw field names for
+# the same canonical attribute (mirroring CRM's "state"/ERP's "state_code"
+# divergence, now across three systems) and asymmetric coverage -- ERP alone
+# carries list_price/currency_code/product_status/supplier_part_number
+# (cross-ref copy); PLM alone carries manufacturer_name/lifecycle_status/
+# material/color/country_of_origin/engineering_spec_version; SUPPLIER alone
+# carries lead_time_days/minimum_order_qty. manufacturer_part_number and
+# category ARE mapped by all three (they're the matching/blocking keys and
+# need to exist everywhere for matching to work), but each source's raw
+# column name and, in the generated data, occasional value quality still
+# differ -- see data/generate_product_source_data.py.
+DEFAULT_PRODUCT_SOURCE_FIELD_MAPPINGS = [
+    # ERP: item_number is ERP's own internal key (bronze's source_record_id,
+    # not a mapped attribute) -- everything else below is commercial/operational.
+    ("SFM100", "product", "ERP", "product_name", "attributes->>'item_description'", "trim", None),
+    ("SFM101", "product", "ERP", "manufacturer_part_number", "attributes->>'mfr_part_no'", "upper_trim",
+     "ERP's mfr_part_no column, upper-cased for consistent display -- matching normalizes "
+     "further at match time via matching_rules' 'normalize_code' (MR100)."),
+    ("SFM102", "product", "ERP", "category", "attributes->>'category_code'", "upper_trim",
+     "ERP's category_code column."),
+    ("SFM103", "product", "ERP", "unit_of_measure", "attributes->>'uom'", "upper_trim", None),
+    ("SFM104", "product", "ERP", "list_price", "attributes->>'unit_price'", "trim", None),
+    ("SFM105", "product", "ERP", "currency_code", "attributes->>'currency'", "upper_trim", None),
+    ("SFM106", "product", "ERP", "product_status", "attributes->>'item_status'", "trim_proper_case", None),
+    ("SFM107", "product", "ERP", "weight_kg", "attributes->>'gross_weight'", "numeric_extract",
+     "ERP's gross_weight column mixes a unit into the same text field (e.g. \"4.20 kg\") -- "
+     "numeric_extract pulls just the number, unlike PLM's already-clean weight_kg (SFM118)."),
+    ("SFM108", "product", "ERP", "supplier_id", "attributes->>'vendor_id'", "upper_trim",
+     "ERP's own internal vendor code -- deliberately not always the same format as Supplier's "
+     "own vendor_account_id for the same real-world supplier (SFM132)."),
+    ("SFM109", "product", "ERP", "supplier_part_number", "attributes->>'vendor_part_no'", "upper_trim",
+     "ERP's own cross-reference copy of the supplier's part number -- occasionally stale/"
+     "mismatched against Supplier's own record (SFM133)."),
+    ("SFM110", "product", "ERP", "source_created_date", "attributes->>'created_on'", "none", None),
+    ("SFM111", "product", "ERP", "source_modified_date", "attributes->>'last_modified'", "none", None),
+
+    # PLM: part_id is PLM's own internal key (source_record_id) -- everything
+    # else is engineering.
+    ("SFM112", "product", "PLM", "product_name", "attributes->>'part_name'", "trim", None),
+    ("SFM113", "product", "PLM", "manufacturer_part_number", "attributes->>'mpn'", "upper_trim", None),
+    ("SFM114", "product", "PLM", "manufacturer_name", "attributes->>'mfr_name'", "trim_proper_case", None),
+    ("SFM115", "product", "PLM", "category", "attributes->>'product_family'", "upper_trim",
+     "PLM's product_family column."),
+    ("SFM116", "product", "PLM", "unit_of_measure", "attributes->>'uom_code'", "upper_trim", None),
+    ("SFM117", "product", "PLM", "lifecycle_status", "attributes->>'lifecycle_stage'", "trim_proper_case", None),
+    ("SFM118", "product", "PLM", "weight_kg", "attributes->>'weight_kg'", "trim",
+     "PLM's own weight_kg column is already a clean number -- no unit text to strip, unlike "
+     "ERP's gross_weight (SFM107)."),
+    ("SFM119", "product", "PLM", "material", "attributes->>'material_spec'", "trim_proper_case", None),
+    ("SFM120", "product", "PLM", "color", "attributes->>'color_spec'", "trim_proper_case", None),
+    ("SFM121", "product", "PLM", "country_of_origin", "attributes->>'origin_country'", "upper_trim", None),
+    ("SFM122", "product", "PLM", "engineering_spec_version", "attributes->>'spec_rev'", "upper_trim", None),
+    ("SFM123", "product", "PLM", "source_created_date", "attributes->>'date_created'", "none", None),
+    ("SFM124", "product", "PLM", "source_modified_date", "attributes->>'date_modified'", "none", None),
+
+    # SUPPLIER: supplier_sku is the supplier's own internal key (source_record_id)
+    # -- everything else is the supplier's own spec sheet (landed from a
+    # spreadsheet extract, see scripts/load_bronze.py's file_type='xlsx' entry).
+    ("SFM125", "product", "SUPPLIER", "product_name", "attributes->>'product_title'", "trim", None),
+    ("SFM126", "product", "SUPPLIER", "manufacturer_part_number", "attributes->>'cross_ref_mpn'", "upper_trim",
+     "The supplier's own cross-reference to the MPN -- sometimes blank or mismatched, since "
+     "it's a value they copy in manually rather than the authoritative PLM source (SFM113)."),
+    ("SFM127", "product", "SUPPLIER", "manufacturer_name", "attributes->>'mfg_name'", "trim_proper_case", None),
+    ("SFM128", "product", "SUPPLIER", "category", "attributes->>'commodity_code'", "upper_trim",
+     "Supplier's own commodity_code column."),
+    ("SFM129", "product", "SUPPLIER", "material", "attributes->>'material_type'", "trim_proper_case", None),
+    ("SFM130", "product", "SUPPLIER", "color", "attributes->>'color_desc'", "trim_proper_case", None),
+    ("SFM131", "product", "SUPPLIER", "country_of_origin", "attributes->>'country_of_mfg'", "upper_trim", None),
+    ("SFM132", "product", "SUPPLIER", "supplier_id", "attributes->>'vendor_account_id'", "upper_trim",
+     "The supplier's own account/vendor id -- deliberately a different code scheme than ERP's "
+     "vendor_id for the same real-world supplier in some rows (SFM108)."),
+    ("SFM133", "product", "SUPPLIER", "supplier_part_number", "attributes->>'supplier_part_no'", "upper_trim", None),
+    ("SFM134", "product", "SUPPLIER", "lead_time_days", "attributes->>'lead_time'", "trim", None),
+    ("SFM135", "product", "SUPPLIER", "minimum_order_qty", "attributes->>'moq'", "trim", None),
+    ("SFM136", "product", "SUPPLIER", "source_created_date", "attributes->>'date_added'", "none", None),
+    ("SFM137", "product", "SUPPLIER", "source_modified_date", "attributes->>'date_updated'", "none", None),
 ]
 
 
@@ -268,39 +434,44 @@ def ensure_domain_tables(con):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, row)
 
+    # Idempotent upgrade for an existing install that already seeded 'product'
+    # back when it was pipeline_status='planned' -- see
+    # _PRODUCT_PIPELINE_STATUS_UPGRADE_SQL's own comment above.
+    con.execute(_PRODUCT_PIPELINE_STATUS_UPGRADE_SQL)
+
     existing_attrs = set(
         (r[0], r[1]) for r in con.execute(
             "SELECT domain_key, attribute_key FROM governance.domain_attributes"
         ).fetchall()
     )
-    for attr in DEFAULT_CUSTOMER_ATTRIBUTES:
-        if ("customer", attr[0]) in existing_attrs:
+    for domain_key, *attr in ALL_DOMAIN_ATTRIBUTES:
+        if (domain_key, attr[0]) in existing_attrs:
             continue
         con.execute("""
             INSERT INTO governance.domain_attributes
                 (domain_key, attribute_key, display_label, data_type, is_required,
                  is_matching_field, is_similarity_text_field, is_blocking_key,
                  is_dashboard_breakdown, sort_order)
-            VALUES ('customer', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, attr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [domain_key] + attr)
 
-    # Backfill is_dashboard_breakdown onto rows inserted by an earlier Phase 1
-    # run (before this flag existed) -- the insert-if-missing loop above only
-    # covers brand-new rows, not the column added afterward to existing ones.
-    # Idempotent: a no-op once already applied.
-    con.execute("""
-        UPDATE governance.domain_attributes
-        SET is_dashboard_breakdown = true
-        WHERE domain_key = 'customer' AND attribute_key IN ('state_code', 'country_code')
-          AND NOT is_dashboard_breakdown
-    """)
+    # Backfill is_dashboard_breakdown onto rows inserted by an earlier run
+    # (before this flag existed for that domain) -- the insert-if-missing loop
+    # above only covers brand-new rows, not a flag value changed afterward on
+    # an already-existing one. Idempotent: a no-op once already applied.
+    for domain_key, attribute_key in _DASHBOARD_BREAKDOWN_ATTRS:
+        con.execute("""
+            UPDATE governance.domain_attributes
+            SET is_dashboard_breakdown = true
+            WHERE domain_key = ? AND attribute_key = ? AND NOT is_dashboard_breakdown
+        """, [domain_key, attribute_key])
 
     existing_sources = set(
         (r[0], r[1]) for r in con.execute(
             "SELECT domain_key, source_system_key FROM governance.domain_source_systems"
         ).fetchall()
     )
-    for row in DEFAULT_CUSTOMER_SOURCE_SYSTEMS:
+    for row in DEFAULT_CUSTOMER_SOURCE_SYSTEMS + DEFAULT_PRODUCT_SOURCE_SYSTEMS:
         if (row[0], row[1]) in existing_sources:
             continue
         con.execute("""
@@ -339,7 +510,7 @@ def ensure_domain_tables(con):
     existing_mappings = set(
         r[0] for r in con.execute("SELECT mapping_id FROM governance.source_field_mappings").fetchall()
     )
-    for row in DEFAULT_SOURCE_FIELD_MAPPINGS:
+    for row in DEFAULT_SOURCE_FIELD_MAPPINGS + DEFAULT_PRODUCT_SOURCE_FIELD_MAPPINGS:
         if row[0] in existing_mappings:
             continue
         con.execute("""
@@ -395,10 +566,52 @@ def migrate_user_domain_access(con):
     return migrated
 
 
+def migrate_product_domain_access(con):
+    """One-time, idempotent backfill for Product domain onboarding: every user
+    who already has a governance.user_domain_access row for 'customer' gets an
+    equivalent row for 'product' (same gold_access level), so flipping
+    domain_registry.pipeline_status to 'live' doesn't silently lock everyone
+    out of a domain nobody has an explicit grant for yet (see api/auth.py's
+    domain_access_level() -- a user with no row for a domain has 'none', even
+    if their legacy gold_access is 'read_write'). A governance user can then
+    tune Product access per-user afterward via User Administration; this only
+    seeds a reasonable starting point. Safe to re-run: a (user_id, 'product')
+    pair that already has a row (including one a governance user has since
+    changed) is left untouched.
+
+    No-ops (returns 0) if auth.users doesn't exist yet, same reasoning as
+    migrate_user_domain_access() above."""
+    auth_users_exists = con.execute("""
+        SELECT count(*) FROM information_schema.tables
+        WHERE table_schema = 'auth' AND table_name = 'users'
+    """).fetchone()[0]
+    if not auth_users_exists:
+        return 0
+    customer_access = con.execute(
+        "SELECT user_id, gold_access FROM governance.user_domain_access WHERE domain_key = 'customer'"
+    ).fetchall()
+    existing = set(
+        r[0] for r in con.execute(
+            "SELECT user_id FROM governance.user_domain_access WHERE domain_key = 'product'"
+        ).fetchall()
+    )
+    migrated = 0
+    for user_id, gold_access in customer_access:
+        if user_id in existing:
+            continue
+        con.execute("""
+            INSERT INTO governance.user_domain_access (user_id, domain_key, gold_access)
+            VALUES (?, 'product', ?)
+        """, (user_id, gold_access or "none"))
+        migrated += 1
+    return migrated
+
+
 def main():
     con = duckdb.connect(DB_PATH)
     ensure_domain_tables(con)
     migrated = migrate_user_domain_access(con)
+    migrated_product = migrate_product_domain_access(con)
     # Flush this run's ALTER TABLE ... ADD COLUMN ... DEFAULT statements out
     # of the WAL immediately rather than leaving them for whatever opens this
     # file next to replay -- see api/db.py's get_con() for why (this
@@ -407,7 +620,8 @@ def main():
     print(
         "governance.domain_registry/domain_attributes/domain_source_systems/"
         "domain_relationships/user_domain_access ready. "
-        f"{migrated} user(s) newly backfilled into user_domain_access."
+        f"{migrated} user(s) newly backfilled into user_domain_access (customer), "
+        f"{migrated_product} user(s) newly backfilled into user_domain_access (product)."
     )
 
 

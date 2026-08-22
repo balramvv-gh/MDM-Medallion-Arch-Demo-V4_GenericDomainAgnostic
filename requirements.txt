@@ -5,6 +5,7 @@ pandas
 numpy
 scikit-learn
 faker
+openpyxl  # pandas' xlsx engine -- scripts/load_bronze.py reads the Supplier product source as a spreadsheet
 fastapi
 uvicorn[standard]
 anthropic

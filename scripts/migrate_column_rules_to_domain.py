@@ -63,8 +63,18 @@ def migrate(con):
     con.execute("ALTER TABLE bus_rules.column_rules ADD COLUMN IF NOT EXISTS domain_key VARCHAR;")
     con.execute("ALTER TABLE bus_rules.column_rules ADD COLUMN IF NOT EXISTS attribute_key VARCHAR;")
 
+    # WHERE domain_key IS NULL: without this guard, every re-run would blindly
+    # reassign domain_key = 'customer' to EVERY row in the table, including a
+    # future domain's rows (e.g. Product's column_rules, inserted with
+    # domain_key='product' directly by scripts/ensure_governed_schemas.py's
+    # ensure_product_bus_rules()) -- silently stomping them back to 'customer'
+    # on every scripts/build_pipeline.py run (this script runs unconditionally
+    # as step 0.6). api/db.py's equivalent _migrate_bus_rules_to_domain()
+    # already has this guard; this script did not, until now -- a drift this
+    # fixes rather than perpetuates. Once a row has ANY domain_key set (by
+    # this migration or by direct insert), this script leaves it alone.
     rows = con.execute(
-        "SELECT rule_id, source_system, source_column FROM bus_rules.column_rules"
+        "SELECT rule_id, source_system, source_column FROM bus_rules.column_rules WHERE domain_key IS NULL"
     ).fetchall()
     unmapped = []
     for rule_id, source_system, source_column in rows:

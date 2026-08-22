@@ -523,6 +523,7 @@ def _ensure_bus_rules_tables(con):
             """, row)
 
     _migrate_bus_rules_to_domain(con)
+    _ensure_product_bus_rules(con)
 
 
 # (source_system, source_column) -> (domain_key, attribute_key), covering
@@ -603,6 +604,164 @@ def _migrate_bus_rules_to_domain(con):
         UPDATE bus_rules.survivorship_rules SET domain_key = 'customer', attribute_key = target_column
         WHERE domain_key IS NULL
     """)
+
+
+# ---------------------------------------------------------------------------
+# Product domain onboarding: bus_rules seed data for domain_key='product'.
+# Unlike DEFAULT_COLUMN_RULES/MATCHING_RULES/MATCHING_THRESHOLDS/
+# SURVIVORSHIP_RULES below (Customer's original rows, inserted without a
+# domain_key -- domain_key is backfilled afterward by
+# _migrate_bus_rules_to_domain above), these Product rows carry domain_key/
+# attribute_key directly at insert time, since Product is onboarded after
+# domain_key already exists as a first-class column -- there is no
+# "pre-domain-key" era to replay for a brand-new domain. Mirrors
+# scripts/ensure_governed_schemas.py's DEFAULT_PRODUCT_*/ensure_product_bus_rules
+# exactly -- if you change one, change the other to match.
+# ---------------------------------------------------------------------------
+
+DEFAULT_PRODUCT_COLUMN_RULES = [
+    # rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description
+    ("R100", "product", "product_name", "ERP", "item_description", "not_null", None, "reject", "Product name is required"),
+    ("R101", "product", "manufacturer_part_number", "ERP", "mfr_part_no", "not_null", None, "reject", "Manufacturer part number is required"),
+    ("R102", "product", "list_price", "ERP", "unit_price", "regex", r"^\d+(\.\d{1,2})?$", "reject", "List price must be a positive number with up to 2 decimal places"),
+    ("R103", "product", "supplier_id", "ERP", "vendor_id", "not_null", None, "reject", "Supplier ID is required"),
+    ("R104", "product", "product_status", "ERP", "item_status", "trim_case_proper", None, "correct", "Trim whitespace and apply proper case"),
+    ("R105", "product", "product_name", "PLM", "part_name", "not_null", None, "reject", "Product name is required"),
+    ("R106", "product", "manufacturer_part_number", "PLM", "mpn", "not_null", None, "reject", "Manufacturer part number is required"),
+    ("R107", "product", "weight_kg", "PLM", "weight_kg", "regex", r"^\d+(\.\d+)?$", "reject", "Weight must be a positive numeric value"),
+    ("R108", "product", "country_of_origin", "PLM", "origin_country", "reference_country", None, "reject", "Country of origin must be a valid ISO country code"),
+    ("R109", "product", "manufacturer_name", "PLM", "mfr_name", "trim_case_proper", None, "correct", "Trim whitespace and apply proper case"),
+    ("R110", "product", "product_name", "SUPPLIER", "product_title", "not_null", None, "reject", "Product name is required"),
+    ("R111", "product", "supplier_id", "SUPPLIER", "vendor_account_id", "not_null", None, "reject", "Supplier account ID is required"),
+    ("R112", "product", "lead_time_days", "SUPPLIER", "lead_time", "regex", r"^\d+$", "reject", "Lead time must be a whole number of days"),
+    ("R113", "product", "minimum_order_qty", "SUPPLIER", "moq", "regex", r"^\d+$", "reject", "Minimum order quantity must be a whole number"),
+    ("R114", "product", "country_of_origin", "SUPPLIER", "country_of_mfg", "reference_country", None, "reject", "Country of origin must be a valid ISO country code"),
+]
+
+DEFAULT_PRODUCT_MATCHING_RULES = [
+    # rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description
+    ("MR100", "product", "manufacturer_part_number", "MT101", "exact_match_field", 1, "manufacturer_part_number", "normalize_code",
+     "Normalized (uppercased, alphanumeric-only) manufacturer part number must match exactly"),
+    ("MR101", "product", "product_name", "MT102", "similarity_text_field", 1, "product_name", "none",
+     "Included in the concatenated text used for TF-IDF similarity scoring"),
+    ("MR102", "product", "manufacturer_name", "MT102", "similarity_text_field", 2, "manufacturer_name", "none",
+     "Included in the concatenated text used for TF-IDF similarity scoring"),
+    ("MR103", "product", "category", "MT102", "blocking_key", 1, "category", "none",
+     "Candidate pairs are only compared within the same blocking key value, to avoid O(n^2) comparisons at scale."),
+]
+
+DEFAULT_PRODUCT_MATCHING_THRESHOLDS = [
+    # tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier, auto_merge_threshold, review_lower_threshold, description
+    ("MT100", "product", 0, "No-Match Baseline", "no_match_baseline", False, 0.50, None,
+     "Not a real matching tier -- confidence assigned to a single-source golden record with no corroborating match from any tier (\"provisional\")"),
+    ("MT101", "product", 1, "Tier 1: Exact Match", "exact", True, 1.00, None,
+     "Two products are the same if they share an exact match on manufacturer_part_number (see matching_rules MR100) after normalize_code is applied. Binary -- confidence is always this tier's auto_merge_threshold."),
+    ("MT102", "product", 2, "Tier 2: Fuzzy Similarity Match", "fuzzy_tfidf_cosine", True, 0.80, 0.60,
+     "Candidate pairs within the same category (blocking_key, MR103) are scored by TF-IDF character n-gram cosine similarity over the concatenated product_name/manufacturer_name text. score >= auto_merge_threshold auto-merges; review_lower_threshold <= score < auto_merge_threshold is queued to the Match Review queue; score < review_lower_threshold is not a candidate at all. review_lower_threshold is higher than Customer's 0.35 (MT002) deliberately: with only a handful of distinct product component types per category, unrelated products sharing a category and component word can otherwise cross a lower bar purely on that shared vocabulary -- 0.60 was calibrated against this domain's own generated data (see data/generate_product_source_data.py) to keep the Match Review queue to genuinely plausible candidates."),
+]
+
+# One rule per Product attribute that participates in survivorship. Varied
+# across every rule_type this project supports, including the new
+# 'source_priority' ("select if source is X"). Rule-type choice per attribute
+# depends on which of ERP/PLM/SUPPLIER actually map it (see
+# DEFAULT_PRODUCT_SOURCE_FIELD_MAPPINGS in scripts/ensure_domain_metadata.py)
+# -- see that file's DEFAULT_PRODUCT_SURVIVORSHIP_RULES comment for the full
+# per-attribute rationale (why 'newest'/'oldest' are safe only for the three
+# attributes every source maps, and every other attribute uses
+# 'most_complete' or 'source_priority' naming its one sole mapper instead).
+DEFAULT_PRODUCT_SURVIVORSHIP_RULES = [
+    # rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description
+    ("SR100", "product", "product_name", "product_name", "newest", None,
+     "Most recently modified source wins (safe here: ERP/PLM/Supplier all map product_name)"),
+    ("SR101", "product", "manufacturer_part_number", "manufacturer_part_number", "source_priority", "PLM",
+     "PLM (engineering) is this demo's system of record for the manufacturer part number"),
+    ("SR102", "product", "manufacturer_name", "manufacturer_name", "most_complete", None,
+     "Prefers a populated manufacturer name over a blank one -- ERP does not carry this attribute at all"),
+    ("SR103", "product", "category", "category", "oldest", None,
+     "Category classification is set at initial product creation and rarely reclassified afterward -- "
+     "the earliest recorded value is treated as authoritative (safe here: ERP/PLM/Supplier all map category)"),
+    ("SR104", "product", "unit_of_measure", "unit_of_measure", "most_common", None,
+     "The non-blank value that appears in the most contributing source records wins"),
+    ("SR105", "product", "list_price", "list_price", "source_priority", "ERP",
+     "ERP is this demo's sole source of commercial pricing"),
+    ("SR106", "product", "currency_code", "currency_code", "source_priority", "ERP",
+     "ERP is this demo's sole source of commercial pricing"),
+    ("SR107", "product", "product_status", "product_status", "source_priority", "ERP",
+     "ERP's commercial lifecycle status is authoritative"),
+    ("SR108", "product", "lifecycle_status", "lifecycle_status", "source_priority", "PLM",
+     "PLM's engineering lifecycle status is authoritative"),
+    ("SR109", "product", "weight_kg", "weight_kg", "most_complete", None,
+     "Prefers a populated weight over a blank one -- ERP's free-text gross_weight can fail numeric_extract, "
+     "and Supplier does not carry this attribute at all"),
+    ("SR110", "product", "material", "material", "most_complete", None,
+     "Prefers a populated material spec over a blank one -- ERP does not carry this attribute at all"),
+    ("SR111", "product", "color", "color", "shortest_value", None,
+     "Prefers the more concise value across sources over verbose supplier marketing text"),
+    ("SR112", "product", "country_of_origin", "country_of_origin", "most_common", None,
+     "The non-blank value that appears in the most contributing source records wins"),
+    ("SR113", "product", "supplier_id", "supplier_id", "most_complete", None,
+     "Prefers a populated supplier ID over a blank one -- PLM does not carry this attribute at all"),
+    ("SR114", "product", "supplier_part_number", "supplier_part_number", "most_complete", None,
+     "Prefers a populated supplier part number over a blank one -- PLM does not carry this attribute at all"),
+    ("SR115", "product", "lead_time_days", "lead_time_days", "source_priority", "SUPPLIER",
+     "Only Supplier carries this attribute -- always defers to Supplier's own reported value"),
+    ("SR116", "product", "minimum_order_qty", "minimum_order_qty", "source_priority", "SUPPLIER",
+     "Only Supplier carries this attribute -- always defers to Supplier's own reported value"),
+    ("SR117", "product", "engineering_spec_version", "engineering_spec_version", "pattern_match", r"^REV-\d+(\.\d+)?$",
+     "Prefers a value matching the standard \"REV-<major>[.<minor>]\" format over a malformed one "
+     "(safe in practice: only PLM carries this attribute, and its generated values always match)"),
+]
+
+
+def _ensure_product_bus_rules(con):
+    """Seeds Product's bus_rules rows using a PER-RULE_ID existence check --
+    unlike the DEFAULT_COLUMN_RULES/etc. seed blocks above, which only ever
+    fire on a whole-table-empty check. This database already has Customer's
+    rows in every one of these four tables, so that whole-table-empty check
+    never fires again; this function is what actually gets Product's rows
+    inserted. Idempotent: only inserts rule_ids that don't already exist.
+    Mirrors scripts/ensure_governed_schemas.py's ensure_product_bus_rules --
+    if you change one, change the other to match."""
+    existing_column_rules = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.column_rules").fetchall())
+    for rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description in DEFAULT_PRODUCT_COLUMN_RULES:
+        if rule_id in existing_column_rules:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.column_rules
+                (rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, domain_key, attribute_key, source_system, source_column, rule_type, rule_param, severity, description))
+
+    existing_matching_rules = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.matching_rules").fetchall())
+    for rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description in DEFAULT_PRODUCT_MATCHING_RULES:
+        if rule_id in existing_matching_rules:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.matching_rules
+                (rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, domain_key, attribute_key, tier_id, rule_role, rule_order, source_column, transform_function, description))
+
+    existing_thresholds = set(r[0] for r in con.execute("SELECT tier_id FROM bus_rules.matching_thresholds").fetchall())
+    for tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier, auto_merge_threshold, review_lower_threshold, description in DEFAULT_PRODUCT_MATCHING_THRESHOLDS:
+        if tier_id in existing_thresholds:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.matching_thresholds
+                (tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier,
+                 auto_merge_threshold, review_lower_threshold, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (tier_id, domain_key, tier_order, tier_name, match_method, is_match_tier, auto_merge_threshold, review_lower_threshold, description))
+
+    existing_survivorship = set(r[0] for r in con.execute("SELECT rule_id FROM bus_rules.survivorship_rules").fetchall())
+    for rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description in DEFAULT_PRODUCT_SURVIVORSHIP_RULES:
+        if rule_id in existing_survivorship:
+            continue
+        con.execute("""
+            INSERT INTO bus_rules.survivorship_rules
+                (rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (rule_id, domain_key, attribute_key, target_column, rule_type, rule_param, description))
 
 
 # Migrated verbatim from dbt_project/seeds/column_rules.csv.
@@ -744,7 +903,7 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
             {"key": "rule_order", "label": "Rule Order", "type": "number"},
             {"key": "source_column", "label": "Source Column (legacy, reference only)", "type": "text"},
             {"key": "transform_function", "label": "Transform Function", "type": "select",
-             "options": ["none", "normalize_email", "normalize_phone"]},
+             "options": ["none", "normalize_email", "normalize_phone", "normalize_code"]},
             {"key": "description", "label": "Description", "type": "text"},
             {"key": "is_active", "label": "Status", "type": "boolean"},
         ]),
@@ -775,8 +934,8 @@ DEFAULT_ENTITY_TYPE_REGISTRY = [
             {"key": "attribute_key", "label": "Attribute", "type": "text"},
             {"key": "target_column", "label": "Target Column (legacy, reference only)", "type": "text"},
             {"key": "rule_type", "label": "Rule Type", "type": "select",
-             "options": ["most_common", "most_complete", "oldest", "newest", "pattern_match", "shortest_value"]},
-            {"key": "rule_param", "label": "Rule Param (pattern_match only, a regex)", "type": "text"},
+             "options": ["most_common", "most_complete", "oldest", "newest", "pattern_match", "shortest_value", "source_priority"]},
+            {"key": "rule_param", "label": "Rule Param (pattern_match: a regex; source_priority: the preferred source_system_key)", "type": "text"},
             {"key": "description", "label": "Description", "type": "text"},
             {"key": "is_active", "label": "Status", "type": "boolean"},
         ]),
@@ -849,11 +1008,24 @@ DEFAULT_DOMAINS = [
      "Customer master data, matched/merged from CRM and ERP source systems.",
      "live", True, 1),
     ("product", "Product", "Product", "Products",
-     "Product master data (placeholder domain -- metadata only, no pipeline "
-     "yet; demonstrates that the platform is not hardcoded to a single "
-     "domain).",
-     "planned", True, 2),
+     "Product master data, matched/merged from ERP (commercial + operational), "
+     "PLM (engineering), and Supplier (the supplier's own spec sheet) source systems.",
+     "live", True, 2),
 ]
+
+# Existing installs may already have a 'product' row seeded back when it was
+# still pipeline_status='planned' (metadata-only placeholder) -- the
+# insert-if-missing loop below never touches an existing row, so onboarding
+# Product's real pipeline needs an explicit, idempotent flip alongside it.
+# Kept in sync with scripts/ensure_domain_metadata.py's identical constant.
+_PRODUCT_PIPELINE_STATUS_UPGRADE_SQL = """
+    UPDATE governance.domain_registry
+    SET pipeline_status = 'live',
+        description = 'Product master data, matched/merged from ERP (commercial + '
+                       'operational), PLM (engineering), and Supplier (the supplier''s '
+                       'own spec sheet) source systems.'
+    WHERE domain_key = 'product' AND pipeline_status != 'live'
+"""
 
 # is_dashboard_breakdown: see scripts/ensure_domain_metadata.py's copy of
 # this constant for the full docstring -- must stay in sync.
@@ -872,9 +1044,51 @@ DEFAULT_CUSTOMER_ATTRIBUTES = [
     ("source_modified_date", "Source Modified Date", "date", False, False, False, False, False, 12),
 ]
 
+# Canonical attribute set for domain_key='product' -- kept in sync with
+# scripts/ensure_domain_metadata.py's identical constant (see that file for
+# the full field-by-field rationale).
+DEFAULT_PRODUCT_ATTRIBUTES = [
+    ("product_name", "Product Name", "string", True, False, True, False, False, 1),
+    ("manufacturer_part_number", "Manufacturer Part Number", "string", True, True, False, False, False, 2),
+    ("manufacturer_name", "Manufacturer", "string", False, False, True, False, False, 3),
+    ("category", "Product Category", "string", True, False, False, True, True, 4),
+    ("unit_of_measure", "Unit of Measure", "string", False, False, False, False, False, 5),
+    ("list_price", "List Price", "number", False, False, False, False, False, 6),
+    ("currency_code", "Currency", "string", False, False, False, False, False, 7),
+    ("product_status", "Status", "string", True, False, False, False, True, 8),
+    ("lifecycle_status", "Engineering Lifecycle Status", "string", False, False, False, False, False, 9),
+    ("weight_kg", "Weight (kg)", "number", False, False, False, False, False, 10),
+    ("material", "Material", "string", False, False, False, False, False, 11),
+    ("color", "Color", "string", False, False, False, False, False, 12),
+    ("country_of_origin", "Country of Origin", "string", False, False, False, False, False, 13),
+    ("supplier_id", "Supplier ID", "string", True, False, False, False, False, 14),
+    ("supplier_part_number", "Supplier Part Number", "string", False, False, False, False, False, 15),
+    ("lead_time_days", "Lead Time (Days)", "number", False, False, False, False, False, 16),
+    ("minimum_order_qty", "Minimum Order Qty", "number", False, False, False, False, False, 17),
+    ("engineering_spec_version", "Engineering Spec Version", "string", False, False, False, False, False, 18),
+    ("source_created_date", "Source Created Date", "date", False, False, False, False, False, 19),
+    ("source_modified_date", "Source Modified Date", "date", False, False, False, False, False, 20),
+]
+
+_DASHBOARD_BREAKDOWN_ATTRS = {
+    ("customer", "state_code"), ("customer", "country_code"),
+    ("product", "category"), ("product", "product_status"),
+}
+
+ALL_DOMAIN_ATTRIBUTES = (
+    [("customer",) + attr for attr in DEFAULT_CUSTOMER_ATTRIBUTES]
+    + [("product",) + attr for attr in DEFAULT_PRODUCT_ATTRIBUTES]
+)
+
 DEFAULT_CUSTOMER_SOURCE_SYSTEMS = [
     ("customer", "CRM", "CRM", 1),
     ("customer", "ERP", "ERP", 2),
+]
+
+DEFAULT_PRODUCT_SOURCE_SYSTEMS = [
+    ("product", "ERP", "ERP", 1),
+    ("product", "PLM", "PLM", 2),
+    ("product", "SUPPLIER", "Supplier", 3),
 ]
 
 DEFAULT_DOMAIN_RELATIONSHIPS = [
@@ -932,6 +1146,71 @@ DEFAULT_SOURCE_FIELD_MAPPINGS = [
     ("SFM020", "customer", "CRM", "source_created_date", "attributes->>'created_date'", "none", None),
     ("SFM021", "customer", "CRM", "source_modified_date", "attributes->>'modified_date'", "none", None),
     ("SFM022", "customer", "ERP", "source_modified_date", "attributes->>'last_updated'", "none", None),
+]
+
+# Product domain: kept in sync with scripts/ensure_domain_metadata.py's
+# identical constant (see that file for the full field-by-field rationale --
+# three sources with different raw field names, asymmetric coverage, and the
+# ERP-gross_weight-vs-PLM-weight_kg deliberate type/format mismatch resolved
+# via the new 'numeric_extract' transform_function).
+DEFAULT_PRODUCT_SOURCE_FIELD_MAPPINGS = [
+    ("SFM100", "product", "ERP", "product_name", "attributes->>'item_description'", "trim", None),
+    ("SFM101", "product", "ERP", "manufacturer_part_number", "attributes->>'mfr_part_no'", "upper_trim",
+     "ERP's mfr_part_no column, upper-cased for consistent display -- matching normalizes "
+     "further at match time via matching_rules' 'normalize_code' (MR100)."),
+    ("SFM102", "product", "ERP", "category", "attributes->>'category_code'", "upper_trim",
+     "ERP's category_code column."),
+    ("SFM103", "product", "ERP", "unit_of_measure", "attributes->>'uom'", "upper_trim", None),
+    ("SFM104", "product", "ERP", "list_price", "attributes->>'unit_price'", "trim", None),
+    ("SFM105", "product", "ERP", "currency_code", "attributes->>'currency'", "upper_trim", None),
+    ("SFM106", "product", "ERP", "product_status", "attributes->>'item_status'", "trim_proper_case", None),
+    ("SFM107", "product", "ERP", "weight_kg", "attributes->>'gross_weight'", "numeric_extract",
+     "ERP's gross_weight column mixes a unit into the same text field (e.g. \"4.20 kg\") -- "
+     "numeric_extract pulls just the number, unlike PLM's already-clean weight_kg (SFM118)."),
+    ("SFM108", "product", "ERP", "supplier_id", "attributes->>'vendor_id'", "upper_trim",
+     "ERP's own internal vendor code -- deliberately not always the same format as Supplier's "
+     "own vendor_account_id for the same real-world supplier (SFM132)."),
+    ("SFM109", "product", "ERP", "supplier_part_number", "attributes->>'vendor_part_no'", "upper_trim",
+     "ERP's own cross-reference copy of the supplier's part number -- occasionally stale/"
+     "mismatched against Supplier's own record (SFM133)."),
+    ("SFM110", "product", "ERP", "source_created_date", "attributes->>'created_on'", "none", None),
+    ("SFM111", "product", "ERP", "source_modified_date", "attributes->>'last_modified'", "none", None),
+
+    ("SFM112", "product", "PLM", "product_name", "attributes->>'part_name'", "trim", None),
+    ("SFM113", "product", "PLM", "manufacturer_part_number", "attributes->>'mpn'", "upper_trim", None),
+    ("SFM114", "product", "PLM", "manufacturer_name", "attributes->>'mfr_name'", "trim_proper_case", None),
+    ("SFM115", "product", "PLM", "category", "attributes->>'product_family'", "upper_trim",
+     "PLM's product_family column."),
+    ("SFM116", "product", "PLM", "unit_of_measure", "attributes->>'uom_code'", "upper_trim", None),
+    ("SFM117", "product", "PLM", "lifecycle_status", "attributes->>'lifecycle_stage'", "trim_proper_case", None),
+    ("SFM118", "product", "PLM", "weight_kg", "attributes->>'weight_kg'", "trim",
+     "PLM's own weight_kg column is already a clean number -- no unit text to strip, unlike "
+     "ERP's gross_weight (SFM107)."),
+    ("SFM119", "product", "PLM", "material", "attributes->>'material_spec'", "trim_proper_case", None),
+    ("SFM120", "product", "PLM", "color", "attributes->>'color_spec'", "trim_proper_case", None),
+    ("SFM121", "product", "PLM", "country_of_origin", "attributes->>'origin_country'", "upper_trim", None),
+    ("SFM122", "product", "PLM", "engineering_spec_version", "attributes->>'spec_rev'", "upper_trim", None),
+    ("SFM123", "product", "PLM", "source_created_date", "attributes->>'date_created'", "none", None),
+    ("SFM124", "product", "PLM", "source_modified_date", "attributes->>'date_modified'", "none", None),
+
+    ("SFM125", "product", "SUPPLIER", "product_name", "attributes->>'product_title'", "trim", None),
+    ("SFM126", "product", "SUPPLIER", "manufacturer_part_number", "attributes->>'cross_ref_mpn'", "upper_trim",
+     "The supplier's own cross-reference to the MPN -- sometimes blank or mismatched, since "
+     "it's a value they copy in manually rather than the authoritative PLM source (SFM113)."),
+    ("SFM127", "product", "SUPPLIER", "manufacturer_name", "attributes->>'mfg_name'", "trim_proper_case", None),
+    ("SFM128", "product", "SUPPLIER", "category", "attributes->>'commodity_code'", "upper_trim",
+     "Supplier's own commodity_code column."),
+    ("SFM129", "product", "SUPPLIER", "material", "attributes->>'material_type'", "trim_proper_case", None),
+    ("SFM130", "product", "SUPPLIER", "color", "attributes->>'color_desc'", "trim_proper_case", None),
+    ("SFM131", "product", "SUPPLIER", "country_of_origin", "attributes->>'country_of_mfg'", "upper_trim", None),
+    ("SFM132", "product", "SUPPLIER", "supplier_id", "attributes->>'vendor_account_id'", "upper_trim",
+     "The supplier's own account/vendor id -- deliberately a different code scheme than ERP's "
+     "vendor_id for the same real-world supplier in some rows (SFM108)."),
+    ("SFM133", "product", "SUPPLIER", "supplier_part_number", "attributes->>'supplier_part_no'", "upper_trim", None),
+    ("SFM134", "product", "SUPPLIER", "lead_time_days", "attributes->>'lead_time'", "trim", None),
+    ("SFM135", "product", "SUPPLIER", "minimum_order_qty", "attributes->>'moq'", "trim", None),
+    ("SFM136", "product", "SUPPLIER", "source_created_date", "attributes->>'date_added'", "none", None),
+    ("SFM137", "product", "SUPPLIER", "source_modified_date", "attributes->>'date_updated'", "none", None),
 ]
 
 
@@ -1022,35 +1301,39 @@ def _ensure_domain_tables(con):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, row)
 
+    # Idempotent upgrade for an existing install that already seeded 'product'
+    # back when it was pipeline_status='planned'.
+    con.execute(_PRODUCT_PIPELINE_STATUS_UPGRADE_SQL)
+
     existing_attrs = set(
         (r[0], r[1]) for r in con.execute(
             "SELECT domain_key, attribute_key FROM governance.domain_attributes"
         ).fetchall()
     )
-    for attr in DEFAULT_CUSTOMER_ATTRIBUTES:
-        if ("customer", attr[0]) in existing_attrs:
+    for domain_key, *attr in ALL_DOMAIN_ATTRIBUTES:
+        if (domain_key, attr[0]) in existing_attrs:
             continue
         con.execute("""
             INSERT INTO governance.domain_attributes
                 (domain_key, attribute_key, display_label, data_type, is_required,
                  is_matching_field, is_similarity_text_field, is_blocking_key,
                  is_dashboard_breakdown, sort_order)
-            VALUES ('customer', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, attr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [domain_key] + attr)
 
-    con.execute("""
-        UPDATE governance.domain_attributes
-        SET is_dashboard_breakdown = true
-        WHERE domain_key = 'customer' AND attribute_key IN ('state_code', 'country_code')
-          AND NOT is_dashboard_breakdown
-    """)
+    for dk, ak in _DASHBOARD_BREAKDOWN_ATTRS:
+        con.execute("""
+            UPDATE governance.domain_attributes
+            SET is_dashboard_breakdown = true
+            WHERE domain_key = ? AND attribute_key = ? AND NOT is_dashboard_breakdown
+        """, [dk, ak])
 
     existing_sources = set(
         (r[0], r[1]) for r in con.execute(
             "SELECT domain_key, source_system_key FROM governance.domain_source_systems"
         ).fetchall()
     )
-    for row in DEFAULT_CUSTOMER_SOURCE_SYSTEMS:
+    for row in DEFAULT_CUSTOMER_SOURCE_SYSTEMS + DEFAULT_PRODUCT_SOURCE_SYSTEMS:
         if (row[0], row[1]) in existing_sources:
             continue
         con.execute("""
@@ -1089,7 +1372,7 @@ def _ensure_domain_tables(con):
     existing_mappings = set(
         r[0] for r in con.execute("SELECT mapping_id FROM governance.source_field_mappings").fetchall()
     )
-    for row in DEFAULT_SOURCE_FIELD_MAPPINGS:
+    for row in DEFAULT_SOURCE_FIELD_MAPPINGS + DEFAULT_PRODUCT_SOURCE_FIELD_MAPPINGS:
         if row[0] in existing_mappings:
             continue
         con.execute("""
@@ -1100,6 +1383,7 @@ def _ensure_domain_tables(con):
         """, row)
 
     _migrate_user_domain_access(con)
+    _migrate_product_domain_access(con)
 
 
 def _migrate_user_domain_access(con):
@@ -1119,6 +1403,36 @@ def _migrate_user_domain_access(con):
         con.execute("""
             INSERT INTO governance.user_domain_access (user_id, domain_key, gold_access)
             VALUES (?, 'customer', ?)
+        """, (user_id, gold_access or "none"))
+
+
+def _migrate_product_domain_access(con):
+    """Backfill: every user with a governance.user_domain_access row for
+    'customer' gets an equivalent row for 'product' (same gold_access level),
+    so Product going live doesn't silently lock everyone out of it. See
+    scripts/ensure_domain_metadata.py's migrate_product_domain_access
+    docstring -- same logic, kept in sync. No-ops gracefully if auth.users
+    doesn't exist, though get_con() always creates it before this runs."""
+    auth_users_exists = con.execute("""
+        SELECT count(*) FROM information_schema.tables
+        WHERE table_schema = 'auth' AND table_name = 'users'
+    """).fetchone()[0]
+    if not auth_users_exists:
+        return
+    customer_access = con.execute(
+        "SELECT user_id, gold_access FROM governance.user_domain_access WHERE domain_key = 'customer'"
+    ).fetchall()
+    existing = set(
+        r[0] for r in con.execute(
+            "SELECT user_id FROM governance.user_domain_access WHERE domain_key = 'product'"
+        ).fetchall()
+    )
+    for user_id, gold_access in customer_access:
+        if user_id in existing:
+            continue
+        con.execute("""
+            INSERT INTO governance.user_domain_access (user_id, domain_key, gold_access)
+            VALUES (?, 'product', ?)
         """, (user_id, gold_access or "none"))
 
 

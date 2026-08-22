@@ -163,6 +163,13 @@ TRANSFORM_FUNCTIONS = {
     "none": lambda v: v,
     "normalize_email": lambda v: (v or "").strip().lower(),
     "normalize_phone": lambda v: re.sub(r"[^0-9]", "", v or ""),
+    # New (Product domain onboarding): strips everything but letters/digits
+    # and uppercases -- lets an exact_match_field rule treat "ABC-1234" and
+    # "abc1234" as the same manufacturer_part_number for matching purposes,
+    # even though the stored (silver/gold) value keeps each source's own
+    # dash/case convention. Mirrored in api/reprocessing.py's PY_TRANSFORMS/
+    # SQL_TRANSFORMS for the real-time reprocessing path.
+    "normalize_code": lambda v: re.sub(r"[^0-9A-Za-z]", "", v or "").upper(),
 }
 
 

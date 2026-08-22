@@ -14,6 +14,12 @@
 --   pattern_match  -- prefers a value matching rule_param (a regex)
 --   shortest_value -- prefers the shortest non-blank value (e.g. picking the
 --                     cleaner of two address-line variants)
+--   source_priority -- prefers whichever contributing record's source_system
+--                     equals rule_param (e.g. 'ERP') outright, regardless of
+--                     recency -- added for the Product domain's "select if
+--                     source is ERP" requirement, a genuinely different shape
+--                     from every rule above (those all rank by a property of
+--                     the VALUE; this one ranks by a property of the SOURCE)
 -- An attribute with NO configured survivorship_rules row (any domain's
 -- source_created_date/source_modified_date today -- Phase 1 seeded them as
 -- attributes, but Phase 3 hasn't seeded survivorship rules for them, same as
@@ -115,6 +121,15 @@ scored as (
                      then -1 * length(trim(l.value))
                      else -999999
                 end
+            when 'source_priority' then
+                -- rule_param names the preferred source_system_key outright
+                -- (e.g. 'ERP') -- 1 if this candidate came from that source,
+                -- 0 otherwise. Ties (more than one contributing record from
+                -- the SAME preferred source, or no candidate from the
+                -- preferred source at all) fall through to the universal
+                -- date_epoch/sort_order tie-break below like any other rule.
+                case when r.rule_param is not null and l.source_system = r.rule_param
+                     then 1 else 0 end
             -- Phase 0 (flexibility hardening): a rule_type with no branch above
             -- used to fall through to 0 here silently -- same score as an
             -- unmatched 'most_common' row, so a brand-new survivorship
@@ -126,7 +141,7 @@ scored as (
                 'Unrecognized survivorship rule_type ' || coalesce(r.rule_type, 'NULL') ||
                 ' for domain ' || l.domain_key || ', attribute ' || l.target_column ||
                 ' -- no scoring logic implemented in gold_survivorship_winners.sql. ' ||
-                'Known rule_types: most_common, most_complete, oldest, newest, pattern_match, shortest_value.'
+                'Known rule_types: most_common, most_complete, oldest, newest, pattern_match, shortest_value, source_priority.'
             )
         end as base_rank_key
     from long l

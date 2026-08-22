@@ -1,0 +1,91 @@
+part_id,part_name,mpn,mfr_name,product_family,uom_code,lifecycle_stage,weight_kg,material_spec,color_spec,origin_country,spec_rev,date_created,date_modified,is_deleted
+PLM-00001,Stainless Steel Circular Connector 1/4in #0001,PC8564F,Precision Components Inc,ELEC2,EACH,Prototype,3.65,Stainless Steel,Gray,US,REV-9.3,2023-09-02,2025-03-26,false
+PLM-00002,PVC Hose Adapter 3/8in #0002,BC5231H,BrightBearing Corp,HYDR2,PACK,Prototype,11.57,PVC,Black,CN,REV-4.3,2024-08-24,2025-05-06,false
+PLM-00003,Titanium Flat Washer 6205 #0003,BC9682C,BrightBearing Corp,FAST2,PACK,Prototype,1.97,Titanium,Red,IN,REV-3.7,2024-10-13,2025-01-22,false
+PLM-00004,Aluminum Packing Tape NPT-1/2 #0004,IM8623C,Ironclad Manufacturing,PACK2,CASE,Prototype,8.47,Aluminum,Gray,US,REV-6.1,2024-10-07,2025-01-03,false
+PLM-00005,Brass Strapping Band 608ZZ #0005,PS7055D,PackRight Supply,PACK2,BOX,Prototype,10.90,Brass,Clear,IN,REV-5.0,2024-03-09,2025-04-09,false
+PLM-00006,Stainless Steel Solenoid Valve 1/4in #0006,GS3611H,GuardianPro Safety,PNEU1,CASE,Obsolete,4.27,Stainless Steel,Silver,MX,REV-6.9,2024-01-07,2025-01-24,false
+PLM-00007,Titanium Strapping Band M8x40 #0007,MF5705H,Meridian Fasteners Co,PACK2,EACH,Active,3.17,Titanium,Silver,CN,REV-4.9,2024-04-10,2025-05-29,false
+PLM-00008,Brass Spade Terminal 608ZZ #0008,PC8167A,Precision Components Inc,ELEC2,BOX,Prototype,0.75,Brass,Silver,IN,REV-6.8,2024-04-02,2025-01-02,false
+PLM-00009,Nylon Void Fill Foam 5/16in #0009,VC8047E,Voltaic Connectors LLC,PACK2,CASE,Active,4.70,Nylon,Zinc,US,REV-3.2,2023-11-01,2025-03-30,false
+PLM-00010,Stainless Steel Level Sensor 1/2in #0010,PS8238A,PackRight Supply,SENS2,BOX,Prototype,0.43,Stainless Steel,Green,DE,REV-8.7,2024-06-12,2025-04-16,false
+PLM-00011,Stainless Steel Quick-Disconnect Coupler M6x20 #0011,PC7970D,Precision Components Inc,HYDR2,PACK,Prototype,6.14,Stainless Steel,Silver,JP,REV-1.0,2024-10-03,2025-03-29,false
+PLM-00012,Brass Temperature Sensor M6x20 #0012,VC3386B,Voltaic Connectors LLC,SENS1,BOX,Prototype,2.28,Brass,Gray,DE,REV-3.3,2024-08-04,2025-03-08,false
+PLM-00013,Titanium Hydraulic Tee Fitting NPT-1/2 #0013,AM9239D,Apex Motion Systems,HYDR1,CASE,Obsolete,0.24,Titanium,Zinc,US,REV-2.8,2023-07-20,2025-02-25,false
+PLM-00014,Carbon Steel Hex Bolt NPT-1/2 #0014,AM8605C,Apex Motion Systems,FAST1,BOX,Active,1.15,Carbon Steel,Red,MX,REV-8.8,2024-10-11,2025-03-07,false
+PLM-00015,Stainless Steel Hose Adapter 5/16in #0015,FI6057C,Ferrotech Industries,HYDR2,CASE,Prototype,4.50,Stainless Steel,Silver,MX,REV-7.1,2023-07-07,2025-01-31,false
+PLM-00016,Titanium Terminal Block M12x60 #0016,VE6517E,Vertex Engineering,ELEC1,PACK,Obsolete,3.31,Titanium,Yellow,CN,REV-1.7,2024-01-16,2025-02-11,false
+PLM-00017,Aluminum Butt Connector 1/2in #0017,CS1745H,Coastal Supply Corp,ELEC2,CASE,Prototype,6.19,Aluminum,Black,CN,REV-4.3,2023-11-15,2025-04-19,false
+PLM-00018,Stainless Steel Proximity Sensor M6x20 #0018,SI9113G,SenTech Instruments,SENS1,CASE,Obsolete,11.57,Stainless Steel,Gray,CN,REV-8.2,2024-01-21,2025-05-14,false
+PLM-00019,PVC Ring Terminal 1/2in #0019,IM2028A,Ironclad Manufacturing,ELEC1,CASE,Obsolete,4.26,PVC,Black,JP,REV-3.2,2024-08-30,2025-02-26,false
+PLM-00020,Stainless Steel Hydraulic Elbow Fitting M10x50 #0020,AD5344B,AeroValve Dynamics,HYDR1,CASE,Active,12.08,Stainless Steel,Zinc,MX,REV-5.3,2023-09-08,2025-03-09,false
+PLM-00021,Bronze Circular Connector NPT-1/2 #0021,VC8537E,Voltaic Connectors LLC,ELEC2,EACH,Active,1.14,Bronze,Blue,IN,REV-3.3,2024-10-15,2025-02-24,false
+PLM-00022,ABS Plastic Flat Washer M10x50 #0022,CS3924D,Coastal Supply Corp,FAST2,EACH,Active,2.43,ABS Plastic,Red,DE,REV-4.5,2023-08-21,2025-01-05,false
+PLM-00023,Zinc-Plated Steel Roller Bearing 3/8in #0023,CS9301G,Coastal Supply Corp,BRNG1,EACH,Prototype,3.30,Zinc-Plated Steel,Green,US,REV-4.1,2023-12-06,2025-01-12,false
+PLM-00024,Carbon Steel Corrugated Box M6x20 #0024,PC7522F,Precision Components Inc,PACK1,PACK,Active,4.63,Carbon Steel,Green,IN,REV-9.8,2023-09-19,2025-04-13,false
+PLM-00025,Aluminum Pressure Transducer 3/8in #0025,HS4513D,HydroFlow Systems,SENS2,BOX,Active,12.19,Aluminum,Gray,MX,REV-2.8,2023-11-08,2025-01-19,false
+PLM-00026,Stainless Steel Hex Bolt M12x60 #0026,MF9244B,Meridian Fasteners Co,FAST1,BOX,Prototype,1.38,Stainless Steel,Gray,US,REV-6.4,2024-02-29,2025-05-14,false
+PLM-00027,Nylon Corrugated Box DN25 #0027,SI4884F,SenTech Instruments,PACK1,BOX,Obsolete,2.37,Nylon,Zinc,CN,REV-4.0,2023-11-30,2025-03-01,false
+PLM-00028,Bronze Threaded Rod 608ZZ #0028,AD1051B,AeroValve Dynamics,FAST3,EACH,Active,7.89,Bronze,Yellow,US,REV-6.3,2023-11-15,2025-02-08,false
+PLM-00029,Bronze Terminal Block 3/8in #0029,SI3236A,Summit Industrial Group,ELEC1,BOX,Prototype,0.82,Bronze,Green,JP,REV-9.2,2024-06-02,2025-01-22,false
+PLM-00030,Titanium Check Valve M10x50 #0030,PC1098E,Precision Components Inc,PNEU2,EACH,Prototype,5.73,Titanium,Clear,JP,REV-6.5,2024-01-29,2025-01-21,false
+PLM-00031,Zinc-Plated Steel Circular Connector 1/4in #0031,MF3991A,Meridian Fasteners Co,ELEC2,PACK,Active,1.56,Zinc-Plated Steel,Blue,CN,REV-3.7,2024-01-23,2025-03-01,false
+PLM-00032,Carbon Steel Pressure Transducer 6205 #0032,GS6047D,GuardianPro Safety,SENS2,BOX,Active,1.60,Carbon Steel,Red,US,REV-1.2,2024-02-19,2025-03-15,false
+PLM-00033,Brass Terminal Block 1/4in #0033,FI2920B,Ferrotech Industries,ELEC1,EACH,Active,5.19,Brass,Natural,JP,REV-7.8,2023-09-29,2025-03-12,false
+PLM-00034,PVC Corrugated Box 608ZZ #0034,IM1386H,Ironclad Manufacturing,PACK1,EACH,Prototype,0.68,PVC,Blue,MX,REV-2.9,2024-01-16,2025-01-02,false
+PLM-00035,ABS Plastic Pillow Block Bearing 3/8in #0035,BC3759C,BrightBearing Corp,BRNG2,BOX,Active,9.95,ABS Plastic,Blue,DE,REV-3.1,2024-01-29,2025-03-13,false
+PLM-00036,Nylon Thrust Bearing 6205 #0036,SI6902G,Summit Industrial Group,BRNG2,BOX,Prototype,8.41,Nylon,Silver,US,REV-8.9,2024-09-11,2025-01-22,false
+PLM-00037,ABS Plastic Ball Valve M8x40 #0037,VE7866E,Vertex Engineering,PNEU1,CASE,Prototype,10.41,ABS Plastic,Clear,MX,REV-6.3,2024-10-24,2025-05-19,false
+PLM-00038,Brass Packing Tape DN25 #0038,VC7877G,Voltaic Connectors LLC,PACK2,BOX,Active,9.23,Brass,Red,CN,REV-8.0,2024-01-11,2025-05-11,false
+PLM-00039,PVC Solenoid Valve 608ZZ #0039,VC6587B,Voltaic Connectors LLC,PNEU1,BOX,Obsolete,3.34,PVC,Green,JP,REV-3.6,2024-05-22,2025-02-21,false
+PLM-00040,PVC Temperature Sensor M12x60 #0040,BC5562F,BrightBearing Corp,SENS1,EACH,Obsolete,8.40,PVC,Red,DE,REV-4.6,2023-11-14,2025-05-02,false
+PLM-00041,Bronze Cut-Resistant Gloves 5/16in #0041,HS3863E,HydroFlow Systems,SAFE2,CASE,Active,0.58,Bronze,Gray,DE,REV-6.0,2024-02-11,2025-05-22,false
+PLM-00042,Nylon Needle Bearing M8x40 #0042,GS7305E,GuardianPro Safety,BRNG2,CASE,Active,2.46,Nylon,Yellow,JP,REV-8.3,2023-12-11,2025-02-05,false
+PLM-00043,Aluminum Wing Nut 1/4in #0043,SI4200E,SenTech Instruments,FAST2,CASE,Obsolete,3.97,Aluminum,Gray,JP,REV-8.6,2023-10-08,2025-01-12,false
+PLM-00044,Titanium Strapping Band 1/4in #0044,AD1742D,AeroValve Dynamics,PACK2,BOX,Active,5.66,Titanium,Yellow,IN,REV-7.5,2023-08-30,2025-02-07,false
+PLM-00045,Zinc-Plated Steel Respirator Mask M10x50 #0045,MF9832A,Meridian Fasteners Co,SAFE2,PACK,Prototype,4.05,Zinc-Plated Steel,Yellow,JP,REV-3.1,2024-07-29,2025-05-21,false
+PLM-00046,PVC Wing Nut 3/8in #0046,AD3771F,AeroValve Dynamics,FAST2,BOX,Obsolete,6.43,PVC,Zinc,DE,REV-2.7,2023-09-30,2025-03-05,false
+PLM-00047,Bronze Ball Valve 608ZZ #0047,MF9597G,Meridian Fasteners Co,PNEU1,PACK,Obsolete,2.67,Bronze,Green,DE,REV-4.8,2023-07-19,2025-01-07,false
+PLM-00048,Bronze Cut-Resistant Gloves 5/16in #0048,VE7703A,Vertex Engineering,SAFE2,PACK,Prototype,2.67,Bronze,Clear,MX,REV-8.2,2023-09-12,2025-02-16,false
+PLM-00049,Aluminum Cut-Resistant Gloves M6x20 #0049,AD8675C,AeroValve Dynamics,SAFE2,CASE,Prototype,2.11,Aluminum,Natural,DE,REV-4.4,2023-11-13,2025-01-04,false
+PLM-00050,Carbon Steel Solenoid Valve M12x60 #0050,BC7750B,BrightBearing Corp,PNEU1,BOX,Active,9.43,Carbon Steel,Natural,MX,REV-1.0,2024-07-19,2025-03-05,false
+PLM-00051,Aluminum Temperature Sensor M6x20 #0051,VC1735H,Voltaic Connectors LLC,SENS1,EACH,Prototype,8.33,Aluminum,Yellow,IN,REV-2.4,2024-06-21,2025-02-08,false
+PLM-00052,ABS Plastic Ball Bearing 608ZZ #0052,CS5890F,Coastal Supply Corp,BRNG1,EACH,Obsolete,9.59,ABS Plastic,Gray,MX,REV-9.1,2023-11-16,2025-04-28,false
+PLM-00053,ABS Plastic Hard Hat M8x40 #0053,MF9473F,Meridian Fasteners Co,SAFE1,EACH,Prototype,11.46,ABS Plastic,Zinc,CN,REV-3.4,2024-01-03,2025-03-31,false
+PLM-00054,PVC Hard Hat DN25 #0054,VE6544G,Vertex Engineering,SAFE1,EACH,Prototype,5.06,PVC,Clear,JP,REV-5.0,2024-01-09,2025-04-12,false
+PLM-00055,Bronze Circular Connector M6x20 #0055,MF6942D,Meridian Fasteners Co,ELEC2,PACK,Prototype,9.67,Bronze,Zinc,DE,REV-7.0,2023-10-11,2025-03-31,false
+PLM-00056,ABS Plastic Ring Terminal 1/4in #0056,PS3944C,PackRight Supply,ELEC1,PACK,Active,12.26,ABS Plastic,Clear,IN,REV-1.2,2023-08-31,2025-02-03,false
+PLM-00057,Brass Corrugated Box M12x60 #0057,MF5302D,Meridian Fasteners Co,PACK1,PACK,Active,4.31,Brass,Zinc,MX,REV-9.2,2024-01-07,2025-04-29,false
+PLM-00058,Stainless Steel Needle Bearing 1/4in #0058,AM2969A,Apex Motion Systems,BRNG2,PACK,Obsolete,0.41,Stainless Steel,Red,JP,REV-8.7,2024-03-17,2025-04-01,false
+PLM-00059,Bronze Spade Terminal 3/8in #0059,BC7500H,BrightBearing Corp,ELEC2,CASE,Obsolete,4.85,Bronze,Black,JP,REV-5.3,2024-01-14,2025-04-11,false
+PLM-00060,Brass Hard Hat 608ZZ #0060,FI9136F,Ferrotech Industries,SAFE1,CASE,Prototype,11.57,Brass,Red,JP,REV-2.5,2024-07-03,2025-03-08,false
+PLM-00061,PVC Socket Head Cap Screw M6x20 #0061,PC4188E,Precision Components Inc,FAST1,BOX,Prototype,0.10,PVC,Yellow,CN,REV-7.5,2023-07-02,2025-05-30,false
+PLM-00062,Titanium Wing Nut M10x50 #0062,CS6230B,Coastal Supply Corp,FAST2,BOX,Active,2.74,Titanium,Gray,MX,REV-1.5,2024-01-07,2025-03-27,false
+PLM-00063,Nylon Spade Terminal 6205 #0063,GS9800A,GuardianPro Safety,ELEC2,EACH,Active,9.34,Nylon,Blue,US,REV-8.6,2024-10-29,2025-05-08,false
+PLM-00064,Stainless Steel Packing Tape 1/2in #0064,AM3884C,Apex Motion Systems,PACK2,BOX,Active,3.91,Stainless Steel,Zinc,JP,REV-9.1,2024-04-20,2025-03-04,false
+PLM-00065,Aluminum Socket Head Cap Screw 608ZZ #0065,CS2640A,Coastal Supply Corp,FAST1,EACH,Obsolete,1.71,Aluminum,Silver,JP,REV-3.3,2024-03-10,2025-05-29,false
+PLM-00066,Aluminum Hose Adapter NPT-1/2 #0066,PS6992B,PackRight Supply,HYDR2,BOX,Prototype,10.73,Aluminum,Red,IN,REV-3.2,2023-07-21,2025-05-21,false
+PLM-00067,PVC Stretch Wrap Film 6205 #0067,SI2375B,SenTech Instruments,PACK1,EACH,Prototype,7.87,PVC,Clear,MX,REV-9.2,2024-09-21,2025-01-31,false
+PLM-00068,PVC Temperature Sensor 1/2in #0068,GS2570E,GuardianPro Safety,SENS1,EACH,Active,8.44,PVC,Yellow,CN,REV-6.6,2024-06-30,2025-01-19,false
+PLM-00069,PVC Needle Bearing NPT-1/2 #0069,SI4365H,Summit Industrial Group,BRNG2,BOX,Prototype,8.40,PVC,Natural,JP,REV-2.9,2024-07-07,2025-01-05,false
+PLM-00070,Nylon Level Sensor M12x60 #0070,CS9332F,Coastal Supply Corp,SENS2,BOX,Obsolete,11.26,Nylon,Zinc,US,REV-2.6,2023-09-13,2025-02-18,false
+PLM-00071,Stainless Steel Circular Connector M12x60 #0071,CS5967F,Coastal Supply Corp,ELEC2,CASE,Obsolete,2.70,Stainless Steel,Zinc,IN,REV-1.9,2024-04-04,2025-03-23,false
+PLM-00072,Nylon Thrust Bearing 3/8in #0072,AD4721F,AeroValve Dynamics,BRNG2,CASE,Active,2.99,Nylon,Green,MX,REV-3.5,2024-05-17,2025-02-10,false
+PLM-00128,Nylon Flat Washer 6205 #0128,IM8701C,Ironclad Manufacturing,FAST2,EACH,Obsolete,1.67,Nylon,Silver,MX,REV-4.7,2024-02-24,2025-02-25,false
+PLM-00129,Zinc-Plated Steel Ear Protection Muffs M8x40 #0129,PS1811G,  PACKRIGHT SUPPLY  ,SAFE2,BOX,Prototype,0.49,Zinc-Plated Steel,Silver,DE,REV-6.6,2024-03-22,2025-03-27,false
+PLM-00130,Bronze Corrugated Box M8x40 #0130,HS1156E,HydroFlow Systems,PACK1,BOX,Obsolete,4.19,Bronze,Silver,CN,REV-7.7,2024-08-12,2025-03-20,false
+PLM-00131,Brass Ball Bearing DN25 #0131,BC5262G,  BRIGHTBEARING CORP  ,BRNG1,BOX,Obsolete,10.07,Brass,Black,JP,REV-9.6,2024-05-09,2025-05-23,false
+PLM-00132,,VC3194C,Voltaic Connectors LLC,FAST2,PACK,Obsolete,7.56,Aluminum,Yellow,MX,REV-5.7,2023-07-05,2025-01-30,false
+PLM-00133,Zinc-Plated Steel Proximity Sensor 1/2in #0133,,Voltaic Connectors LLC,SENS1,CASE,Obsolete,4.23,Zinc-Plated Steel,Blue,MX,REV-7.0,2023-09-28,2025-03-02,false
+PLM-00134,Carbon Steel Proximity Sensor 6205 #0134,VC5211D,Voltaic Connectors LLC,SENS1,BOX,Obsolete,4.02,Carbon Steel,Green,ZZ,REV-5.5,2023-08-06,2025-03-29,false
+PLM-00135,Nylon Hydraulic Elbow Fitting 6205 #0135,AD7235G,AeroValve Dynamics,HYDR1,PACK,Prototype,3.87,Nylon,Silver,MX,REV-6.7,2024-02-24,2025-03-20,false
+PLM-00136,Zinc-Plated Steel Socket Head Cap Screw 5/16in #0136,,Voltaic Connectors LLC,FAST1,EACH,Prototype,6.87,Zinc-Plated Steel,Black,JP,REV-1.5,2023-08-14,2025-05-23,false
+PLM-00137,,SI8361C,SenTech Instruments,ELEC2,CASE,Active,7.97,Titanium,Gray,US,REV-3.3,2024-05-08,2025-02-24,false
+PLM-00138,ABS Plastic Strapping Band 5/16in #0138,CS6265A,Coastal Supply Corp,PACK2,CASE,Prototype,0.22,ABS Plastic,Yellow,MX,REV-9.8,2024-04-19,2025-03-31,false
+PLM-00139,PVC Void Fill Foam M6x20 #0139,AM5213E,Apex Motion Systems,PACK2,EACH,Obsolete,5.54,PVC,Gray,MX,REV-2.8,2024-01-09,2025-04-30,false
+PLM-00140,Stainless Steel Corrugated Box 5/16in #0140,HS7142E,HydroFlow Systems,PACK1,PACK,Active,4.00,Stainless Steel,Natural,CN,REV-5.3,2024-07-19,2025-05-16,false
+PLM-00141,Titanium Circular Connector 1/2in #0141,FI7309B,Ferrotech Industries,ELEC2,CASE,Prototype,"12,5",Titanium,Silver,JP,REV-5.8,2024-03-20,2025-01-07,false
+PLM-00142,Brass Check Valve 1/4in #0142,MF9925B,Meridian Fasteners Co,PNEU2,PACK,Prototype,"12,5",Brass,Gray,US,REV-8.9,2024-02-25,2025-01-31,false
+PLM-00143,Brass Level Sensor 3/8in #0143,BC6940C,BrightBearing Corp,SENS2,EACH,Active,2.58,Brass,Black,DE,REV-3.2,2024-04-02,2025-03-30,false
+PLM-00144,PVC Terminal Block NPT-1/2 #0144,SI4958D,Summit Industrial Group,ELEC1,EACH,Prototype,12.26,PVC,Natural,ZZ,REV-9.5,2024-08-08,2025-01-23,false
+PLM-00145,Carbon Steel Hydraulic Elbow Fitting 5/16in #0145,PS5096B,PackRight Supply,HYDR1,CASE,Active,10.52,Carbon Steel,Blue,CN,REV-6.0,2024-09-28,2025-05-09,false

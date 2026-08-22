@@ -30,6 +30,14 @@
         "case when regexp_replace(coalesce(" ~ expr ~ ", ''), '[^0-9]', '', 'g') != '' " ~
         "then '+1' || right(regexp_replace(" ~ expr ~ ", '[^0-9]', '', 'g'), 10) else null end"
     ) }}
+  {%- elif transform_function == 'numeric_extract' -%}
+    {#- New (Product domain onboarding): pulls the first signed decimal number out of a
+        free-text value, e.g. ERP's gross_weight "4.20 kg" -> "4.20". A source that already
+        stores a clean number (e.g. PLM's weight_kg) doesn't need this transform at all --
+        it's specifically for a source whose raw field mixes units/text into the same
+        column. nullif(...) so a value with no numeric token at all standardizes to null,
+        same "blank beats garbage" convention as trim/upper_trim above. -#}
+    {{ return("nullif(regexp_extract(coalesce(" ~ expr ~ ", ''), '(-?[0-9]+\\.?[0-9]*)', 1), '')") }}
   {%- else -%}
     {{ return(none) }}
   {%- endif -%}

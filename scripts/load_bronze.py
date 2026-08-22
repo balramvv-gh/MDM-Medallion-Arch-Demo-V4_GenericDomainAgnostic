@@ -71,6 +71,19 @@ Row volumes here are demo-scale (hundreds of rows per source), so per-row
 inserts via executemany are simple and fast enough; a production connector
 landing much larger extracts would want a bulk JSON load instead.
 
+Product domain onboarding added xlsx support: SUPPLIER's extract is landed as
+a spreadsheet (data/generate_product_source_data.py), not a CSV, mirroring a
+real supplier portal's own export format being different from an internal
+system's CSV feed. Each SOURCES entry now carries a file_type ('csv', the
+default, or 'xlsx'); an 'xlsx' entry is read with pandas.read_excel(...,
+dtype=str) -- dtype=str mirrors read_csv_auto's ALL_VARCHAR=TRUE for CSV, so
+every column arrives as a raw string regardless of file format, with no type
+inference of its own to disagree with -- then registered as an ordinary
+DuckDB view via con.register() so every line of SQL below (watermark
+filtering, column introspection, row extraction) runs identically
+regardless of which file_type a source uses. No per-file-type branch exists
+anywhere else in this file.
+
 Usage:
     python scripts/load_bronze.py                # auto: full first time, incremental after
     python scripts/load_bronze.py --force-full    # explicit full rebuild, ignores load history
@@ -82,27 +95,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = str(BASE / "mdm_demo.duckdb")
 # forward slashes for SQL string literals -- avoids backslash-escaping pitfalls on Windows
 CRM_CSV = (BASE / "data" / "sources" / "crm_customers.csv").as_posix()
 ERP_CSV = (BASE / "data" / "sources" / "erp_customers.csv").as_posix()
+ERP_PRODUCTS_CSV = (BASE / "data" / "sources" / "erp_products.csv").as_posix()
+PLM_PRODUCTS_CSV = (BASE / "data" / "sources" / "plm_products.csv").as_posix()
+SUPPLIER_PRODUCTS_XLSX = (BASE / "data" / "sources" / "supplier_products.xlsx").as_posix()
 
 # Source-connector config only (which raw column is the natural key / the
-# watermark date / the logical-delete flag) -- not domain business logic. A
-# new domain's source is onboarded by adding an entry here, never by adding
-# code. is_deleted_col is extracted into its own structural bronze column
-# (like source_record_id) rather than left for a dbt model to dig out of
-# `attributes` by assuming every source names it literally "is_deleted" --
-# whether/how a source marks logical deletes is a connector-level technical
-# concern, not domain business data, so it's config here, not a governed
-# domain_attributes/source_field_mappings row.
+# watermark date / the logical-delete flag / the file format) -- not domain
+# business logic. A new domain's source is onboarded by adding an entry
+# here, never by adding code. is_deleted_col is extracted into its own
+# structural bronze column (like source_record_id) rather than left for a
+# dbt model to dig out of `attributes` by assuming every source names it
+# literally "is_deleted" -- whether/how a source marks logical deletes is a
+# connector-level technical concern, not domain business data, so it's
+# config here, not a governed domain_attributes/source_field_mappings row.
+# file_type: 'csv' (default, read via read_csv_auto) | 'xlsx' (read via
+# pandas.read_excel, see module docstring).
 SOURCES = [
     {
         "domain_key": "customer",
         "source_system": "CRM",
-        "csv_path": CRM_CSV,
+        "file_type": "csv",
+        "file_path": CRM_CSV,
         "natural_key_col": "customer_id",
         "modified_date_col": "modified_date",
         "is_deleted_col": "is_deleted",
@@ -110,9 +130,37 @@ SOURCES = [
     {
         "domain_key": "customer",
         "source_system": "ERP",
-        "csv_path": ERP_CSV,
+        "file_type": "csv",
+        "file_path": ERP_CSV,
         "natural_key_col": "customer_number",
         "modified_date_col": "last_updated",
+        "is_deleted_col": "is_deleted",
+    },
+    {
+        "domain_key": "product",
+        "source_system": "ERP",
+        "file_type": "csv",
+        "file_path": ERP_PRODUCTS_CSV,
+        "natural_key_col": "item_number",
+        "modified_date_col": "last_modified",
+        "is_deleted_col": "is_deleted",
+    },
+    {
+        "domain_key": "product",
+        "source_system": "PLM",
+        "file_type": "csv",
+        "file_path": PLM_PRODUCTS_CSV,
+        "natural_key_col": "part_id",
+        "modified_date_col": "date_modified",
+        "is_deleted_col": "is_deleted",
+    },
+    {
+        "domain_key": "product",
+        "source_system": "SUPPLIER",
+        "file_type": "xlsx",
+        "file_path": SUPPLIER_PRODUCTS_XLSX,
+        "natural_key_col": "supplier_sku",
+        "modified_date_col": "date_updated",
         "is_deleted_col": "is_deleted",
     },
 ]
@@ -197,6 +245,7 @@ def _load_source(con, source, force_full: bool, batch_id: str):
     natural_key_col = source["natural_key_col"]
     modified_date_col = source["modified_date_col"]
     is_deleted_col = source["is_deleted_col"]
+    file_type = source.get("file_type", "csv")
 
     control = _get_control_row(con, domain_key, source_system)
     mode = "FULL" if (force_full or control is None) else "INCREMENTAL"
@@ -205,10 +254,26 @@ def _load_source(con, source, force_full: bool, batch_id: str):
     # watermark (config-driven per SOURCES entry) -- not a branch on domain
     # or source identity. try_cast so a malformed date never aborts the load,
     # it just can't participate in incremental filtering/watermarking.
-    raw_sql = f"""
-        SELECT *, try_cast({modified_date_col} AS DATE) AS _wm_date
-        FROM read_csv_auto('{source['csv_path']}', ALL_VARCHAR=TRUE)
-    """
+    if file_type == "xlsx":
+        # dtype=str mirrors read_csv_auto's ALL_VARCHAR=TRUE below -- every
+        # column arrives as a raw string, matching what a spreadsheet export
+        # actually sends, with no pandas type inference of its own to
+        # disagree with downstream. con.register() makes the DataFrame
+        # queryable as an ordinary view, so every other line in this
+        # function (watermark filter, column introspection, row extraction)
+        # is identical regardless of file_type.
+        df = pd.read_excel(source["file_path"], dtype=str)
+        view_name = f"_bronze_src_{domain_key}_{source_system}".lower()
+        con.register(view_name, df)
+        raw_sql = f"""
+            SELECT *, try_cast({modified_date_col} AS DATE) AS _wm_date
+            FROM {view_name}
+        """
+    else:
+        raw_sql = f"""
+            SELECT *, try_cast({modified_date_col} AS DATE) AS _wm_date
+            FROM read_csv_auto('{source['file_path']}', ALL_VARCHAR=TRUE)
+        """
     if mode == "INCREMENTAL":
         watermark_date = control["watermark_date"]
         if watermark_date is None:

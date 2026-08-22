@@ -6,9 +6,17 @@ interview talking piece with runnable code behind it.
 
 **This is V4**: the V3 codebase (single hardcoded "Customer" domain) was generalized into
 a domain-agnostic platform — see "V4: domain-agnostic generalization" below for what
-changed and why. Today, only the **Customer** domain has a real, tested, end-to-end
-pipeline; a second domain, **Product**, exists purely as metadata (no pipeline) to prove
-the platform isn't secretly still hardcoded to one domain.
+changed and why. For most of V4's life, only the **Customer** domain had a real,
+tested, end-to-end pipeline, with a second domain, **Product**, sitting in as
+metadata-only (`domain_registry`/`domain_relationships` rows, no attributes, no source
+systems, no gold data) just to prove the platform wasn't secretly still hardcoded to
+one domain. **Product has since been onboarded for real** — three source systems, a
+20-attribute schema, validation/matching/survivorship rules, a synthetic data
+generator, and a verified end-to-end pipeline — using the exact same additive,
+metadata-driven onboarding process V4 was built to support: new governance rows, two
+genuinely new rule types the generic platform code didn't have a branch for yet, one
+new file, and one incidental bug fix in unrelated pre-existing code. See "Product
+domain onboarding" below.
 
 ## Purpose & positioning
 
@@ -229,7 +237,10 @@ the generic attribute-bag shape every domain now shares.
   (confidence = that tier's `auto_merge_threshold`, 1.00); tier 2 is an
   embedding-similarity fuzzy match (TF-IDF character n-gram cosine similarity over
   name/address text, blocked by state_code) that catches near-duplicates tier 1
-  misses. High-confidence fuzzy matches auto-merge with their similarity score as
+  misses. Product's own configuration (added when it was onboarded — see "Product
+  domain onboarding" below) follows the identical two-tier shape: tier 1 exact match
+  on a normalized part number, tier 2 fuzzy match on product/manufacturer name text
+  blocked by category. High-confidence fuzzy matches auto-merge with their similarity score as
   confidence; borderline ones surface in a **Match Review queue** for a data
   steward to confirm or reject rather than auto-merging. A third, non-tier row
   (`is_match_tier=false`) holds the 0.50 "provisional" baseline confidence
@@ -244,7 +255,8 @@ the generic attribute-bag shape every domain now shares.
   domain, each is independently won by whichever contributing source best
   satisfies that attribute's own `bus_rules.survivorship_rules` rule
   (`most_common` / `most_complete` / `oldest` / `newest` / `pattern_match` /
-  `shortest_value`), with `source_modified_date` desc (then
+  `shortest_value` / `source_priority` — the last added for Product, see "Product
+  domain onboarding" below), with `source_modified_date` desc (then
   `domain_source_systems.sort_order`, replacing V3's hardcoded "CRM preferred")
   as the universal, non-configurable tie-break whenever a rule doesn't produce a
   clean winner — see `dbt_project/models/gold/gold_survivorship_winners.sql`. A
@@ -565,6 +577,176 @@ code review, per this project's own testing convention): graph renders (41 nodes
 no stale terms present anywhere on the page, node detail panel loads correctly for
 both a bronze and a gold node, no console errors.
 
+## Product domain onboarding (this pass)
+
+Product's schema, sources, and rule configuration were metadata-only from the initial
+V4 generalization pass (see above) until this pass, which gave it the same kind of
+real, tested pipeline Customer has always had — added the same way the generalization
+work was designed to allow: additive metadata rows plus a small number of genuinely
+new, reusable rule-type/transform-function branches in already-generic code, not a
+rewrite of any existing dbt model or Python file. Exactly two new rule types were
+needed (`normalize_code` for matching, `source_priority` for survivorship — both
+below), one new file (the Product source-data generator), and one incidental bug fix
+in unrelated pre-existing code (also below).
+
+**Three source systems** (`governance.domain_source_systems`, domain_key='product'):
+**ERP** (commercial + operational attributes — price, status, supplier linkage),
+**PLM** (engineering attributes — spec versions, physical properties), and
+**SUPPLIER** (the supplier's own spec sheet — lead time, minimum order quantity,
+their own part number). Three sources instead of Customer's two, chosen specifically
+so the platform's attribute-mapping story has a case with more than one
+non-authoritative source per attribute to reconcile, and so bronze proves out a
+second file format: ERP and PLM land as CSV, exactly like Customer's CRM/ERP, but
+SUPPLIER lands as an **XLSX** spreadsheet (a supplier's own hand-maintained catalog
+is realistically not going to arrive as a clean CSV export). `scripts/load_bronze.py`
+gained a `file_type: 'xlsx'` option in its per-source `SOURCES` config — read via
+`pandas.read_excel(dtype=str)`, then registered as a DuckDB view via
+`con.register()` — every other line of `load_bronze.py`'s logic (watermark
+filtering, batch logging, full-vs-incremental detection) is unchanged and
+file-type-agnostic; xlsx support was additive configuration, not a new code path.
+
+**Schema** (`governance.domain_attributes`, 20 rows, sort_order 1-20): `product_name`
+(required, `is_similarity_text_field`), `manufacturer_part_number` (required,
+`is_matching_field` — the tier-1 exact-match key), `manufacturer_name`
+(`is_similarity_text_field`), `category` (required, `is_blocking_key`,
+`is_dashboard_breakdown`), `unit_of_measure`, `list_price`, `currency_code`,
+`product_status` (required, `is_dashboard_breakdown`), `lifecycle_status`,
+`weight_kg`, `material`, `color`, `country_of_origin`, `supplier_id` (required),
+`supplier_part_number`, `lead_time_days`, `minimum_order_qty`,
+`engineering_spec_version`, `source_created_date`, `source_modified_date`.
+
+**Source field mappings are deliberately asymmetric**
+(`governance.source_field_mappings`, SFM100-137) — this is the actual point of
+having three sources, not an oversight: only `product_name`/
+`manufacturer_part_number`/`category` are mapped by all three sources (they have to
+be, for matching and blocking to work regardless of which sources a given product
+happens to be in); `manufacturer_name`/`material`/`color`/`country_of_origin` come
+from PLM+SUPPLIER only (not ERP); `unit_of_measure`/`weight_kg` come from ERP+PLM
+only (not SUPPLIER); `list_price`/`currency_code`/`product_status` are ERP-only;
+`lifecycle_status`/`engineering_spec_version` are PLM-only; `supplier_id`/
+`supplier_part_number` are ERP+SUPPLIER only (not PLM); `lead_time_days`/
+`minimum_order_qty` are SUPPLIER-only — mirroring how a real
+commercial/engineering/supplier-catalog split actually works. A new
+`transform_function`, `numeric_extract`, was added to
+`dbt_project/macros/transform_expr.sql` for this: ERP's `gross_weight` field arrives
+as free text like `"4.20 kg"`, and `numeric_extract` pulls the first numeric token
+out of it (PLM's own `weight_kg` column is already clean, so its own mapping just
+uses `trim`) — the same "handler registry, add a branch" pattern every other
+`transform_function` already followed.
+
+**Validation** (`bus_rules.column_rules`, R100-R114, 15 rules across all three
+sources): `not_null` on `product_name`/`manufacturer_part_number`/`supplier_id`/
+`vendor_account_id` per source; `regex` on ERP's `unit_price`
+(`^\d+(\.\d{1,2})?$`), PLM's `weight_kg` (`^\d+(\.\d+)?$`), and SUPPLIER's lead-time
+and MOQ fields (`^\d+$`); `reference_country` on PLM's `origin_country` and
+SUPPLIER's `country_of_mfg`; `trim_case_proper` corrections on ERP's `item_status`
+and PLM's `mfr_name`. No new `rule_type` was needed here — all 15 rules reuse the
+existing `not_null`/`regex`/`reference_country`/`trim_case_proper` vocabulary
+`api/validation.py` and `dbt_project/macros/rule_type_expr.sql` already implement.
+
+**Matching** (`bus_rules.matching_rules` MR100-103, `matching_thresholds` MT100-102):
+tier 1 is exact match on `manufacturer_part_number`, using a genuinely new
+`transform_function`, `normalize_code` (strips non-alphanumerics, uppercases —
+added to `scripts/generate_matches.py`'s `TRANSFORM_FUNCTIONS` and
+`api/reprocessing.py`'s `PY_TRANSFORMS`/`SQL_TRANSFORMS`), so `"MPN-4471-A"` and
+`"mpn4471a"` compare equal even though no two sources format their part numbers the
+same way. Tier 2 is the same fuzzy engine Customer uses (TF-IDF character n-gram
+cosine similarity), over `product_name` + `manufacturer_name` text, blocked by
+`category`. MT102's `review_lower_threshold` is **0.60** — notably higher than
+Customer's 0.35 — a deliberate calibration, not a copy-paste value: with only a
+handful of distinct product component types per category, unrelated products that
+merely share a category and a common component word (e.g. two different "bearing"
+products) can otherwise cross a low bar purely on shared vocabulary, flooding the
+Match Review queue with non-matches. 0.60 was tuned empirically against this
+domain's own generated test data to keep that queue to genuinely plausible
+candidates only.
+
+**Survivorship** (`bus_rules.survivorship_rules` SR100-117, one rule per
+non-structural attribute): introduces a genuinely new `rule_type`,
+`source_priority` — added to `dbt_project/models/gold/gold_survivorship_winners.sql`
+and `api/reprocessing.py`'s `SURVIVORSHIP_RANK_HANDLERS` — which prefers whichever
+contributing record's `source_system` equals the rule's `rule_param` outright,
+regardless of recency: the platform's answer to "always take this attribute from
+ERP if ERP is present," a real MDM survivorship pattern the existing
+`newest`/`oldest`/`pattern_match`/`most_common`/`most_complete`/`shortest_value`
+vocabulary had no way to express. Product uses every `rule_type` the platform
+supports: `newest` (`product_name`), `oldest` (`category`), `pattern_match`
+(`engineering_spec_version`, preferring the `"REV-<major>[.<minor>]"` format),
+`shortest_value` (`color`), `most_common` (`unit_of_measure`,
+`country_of_origin`), `most_complete` (`manufacturer_name`, `weight_kg`,
+`material`, `supplier_id`, `supplier_part_number`), and `source_priority`
+(`manufacturer_part_number`/`lifecycle_status` → PLM; `list_price`/
+`currency_code`/`product_status` → ERP; `lead_time_days`/`minimum_order_qty` →
+SUPPLIER). The `rule_type` choice per attribute is not arbitrary: `newest`/`oldest`
+rank purely by date, blind to whether a given contributing record's value for that
+attribute is actually populated, so they're only safe for the three attributes
+every source maps (`product_name`, `manufacturer_part_number`, `category`) — using
+either on an asymmetrically-mapped attribute could in principle pick a source's
+blank/null value over another source's populated one, just because it happens to be
+more recently modified. Every asymmetrically-mapped attribute instead uses
+`most_complete` (safe regardless of which source combination contributed to a given
+match group) or `source_priority` naming that attribute's one sole mapping source
+(also always safe by construction) — verified directly (see below), not just
+reasoned about.
+
+**Test data generator** (`data/generate_product_source_data.py`, new file,
+mirroring `data/generate_source_data.py`'s conventions — deterministic,
+`random.seed`/`Faker.seed` fixed): generates ~145 synthetic master products across
+17 sub-categories (`FAST1-3`, `BRNG1-2`, `ELEC1-2`, `HYDR1-2`, `SENS1-2`, `PACK1-2`,
+`SAFE1-2`, `PNEU1-2`). Every product name carries a unique `#NNNN` tag — a
+realistic industrial-catalog convention, and also deliberate insurance against
+tier-2 fuzzy matching scoring unrelated same-category products as falsely similar.
+Each master product is assigned one of eight patterns controlling which of the
+three sources carry it and how well their data agrees: `ALL3_EXACT` (in all three,
+part number reformatted differently per source but normalizing identically — the
+"slightly mismatched across sources" case), `ALL3_FUZZY_CONFIDENT` (in all three,
+part number genuinely differs so tier 1 misses it, but `product_name` is close
+enough for tier 2 to auto-merge), `ALL3_FUZZY_SUSPECT` (same, but `product_name` is
+more loosely worded — lands in Match Review), `ERP_PLM` / `SUPPLIER_PLM` (pairs,
+missing the third source — the "in the supplier catalog but not yet in ERP" case,
+and its converse), and `SUPPLIER_ONLY` / `ERP_ONLY` / `PLM_ONLY` (singletons).
+Deliberately invalid rows are injected only into each source's own `*_ONLY` pool, so
+they never disturb the matching-calibration rows, hitting each of the 15
+`column_rules`. Verified row counts: ERP=85, PLM=90, Supplier=87 (all in the
+80-100-row-per-source range Customer's own generator targets). **Does not support
+incremental mode** — no `--incremental` flag, unlike `generate_source_data.py` —
+deferred deliberately to later work.
+
+**End-to-end verification** (full `scripts/build_pipeline.py` run in a sandbox
+clone, Customer and Product together, no regressions): Product yields 130 golden
+records from 262 total source rows — 61 singletons, 69 confident auto-merged
+multi-source golden records (spanning both the tier-1 exact and tier-2 auto-merge
+paths), 28 pairs sitting in the Match Review queue awaiting steward action, and 27
+rows rejected to the exceptions queue for failing validation (9 ERP, 8 PLM, 10
+Supplier). A dedicated check confirmed zero cases where a survivorship rule picked
+a blank/null winning value when a populated alternative existed in the same match
+group — every `source_priority` pick was independently verified to come from the
+intended preferred source whenever that source was present in the group, closing
+the null-safety design concern above with a real check, not just the design
+argument.
+
+**One bug fixed in existing (pre-Product) code while onboarding**:
+`scripts/migrate_column_rules_to_domain.py`'s `migrate()` used to reassign
+`domain_key='customer'` to every row in `bus_rules.column_rules` unconditionally on
+every run, with no `WHERE domain_key IS NULL` guard — harmless while Customer was
+the only domain with column rules, but would have silently stomped Product's
+`domain_key='product'` rows back to `'customer'` on the very next
+`scripts/build_pipeline.py` run once Product went live. Fixed by adding the same
+`WHERE domain_key IS NULL` guard `api/db.py`'s equivalent in-code migration already
+had — closing a pre-existing drift between the two migration paths that happened to
+be invisible until a second domain's rows existed to stomp.
+
+`requirements.txt` gained `openpyxl` (pandas' xlsx engine), needed for the Supplier
+source.
+
+**Not yet done for Product**: incremental loads.
+`data/generate_product_source_data.py` has no `--incremental`/`--full` mode, and
+`load_bronze.py`'s incremental auto-detection, while domain-agnostic in principle,
+has only ever been exercised against Customer's generator output — Product's
+`bronze.load_control` rows exist and a full load works, but the incremental path
+for this domain is unverified and explicitly deferred, not silently assumed to
+work.
+
 ## Key data model notes
 
 - `governance.domain_registry` / `domain_attributes` / `domain_source_systems` /
@@ -593,16 +775,22 @@ both a bronze and a gold node, no console errors.
   exact or fuzzy tier, only to add a genuinely new match_method.
 - `bus_rules.matching_rules` — child table keyed by `(domain_key, tier_id)`, one row per
   attribute a tier operates on (rule_role is `exact_match_field`, `similarity_text_field`,
-  or `blocking_key`; `transform_function` is `none`/`normalize_email`/`normalize_phone`,
+  or `blocking_key`; `transform_function` is `none`/`normalize_email`/`normalize_phone`/
+  `normalize_code` (the last added for Product, see "Product domain onboarding" above),
   applied identically in both Python (`scripts/generate_matches.py`, `api/reprocessing.py`)
   and SQL via matching name-keyed registries). Multiple `blocking_key` rows for one tier
   compose into a multi-attribute blocking key; `rule_order` controls concatenation order for
   `similarity_text_field` rows. Today's Customer config: tier 1 exact on email/phone; tier 2
   fuzzy similarity on first_name/last_name/address_line1/address_line2/city, blocked on
-  state_code.
+  state_code. Product's config: tier 1 exact on manufacturer_part_number (via
+  `normalize_code`); tier 2 fuzzy similarity on product_name/manufacturer_name, blocked on
+  category.
 - `bus_rules.survivorship_rules` — one active rule per (domain_key, attribute_key),
   driving attribute-level survivorship. `rule_type` is `most_common`, `most_complete`,
-  `oldest`/`newest`, `pattern_match`, or `shortest_value`. Exactly one primary rule per
+  `oldest`/`newest`, `pattern_match`, `shortest_value`, or `source_priority` (the last
+  added for Product — prefers a named source outright regardless of recency; see
+  "Product domain onboarding" above for the null-safety rationale behind which
+  rule_type suits which kind of attribute). Exactly one primary rule per
   attribute; whenever it doesn't produce a clean winner, `source_modified_date` desc (then
   `domain_source_systems.sort_order`) is the universal, non-configurable tie-break.
   Defaults are all `newest`, which reproduces record-level behavior until a governance user
@@ -653,11 +841,17 @@ both a bronze and a gold node, no console errors.
 
 ## Known simplifications (documented on purpose, not oversights)
 
-- **Only Customer has a real pipeline.** Product exists purely as
-  `domain_registry`/`domain_relationships` metadata — no attributes, no source
-  systems, no gold data — so the Home diagram, domain locking, and "not yet
-  available" handling have a second real domain to demonstrate against. Every
-  domain-scoped endpoint 409s it (`_require_live_domain`).
+- **Product now also has a real pipeline** (see "Product domain onboarding" above) —
+  it was metadata-only (`domain_registry`/`domain_relationships` rows, no
+  attributes, no source systems, no gold data, every domain-scoped endpoint 409ing
+  it via `_require_live_domain`) for most of this project's life, kept that way
+  specifically so the Home diagram, domain locking, and "not yet available"
+  handling had a second real domain to demonstrate against without needing a second
+  full dataset. That demonstration purpose is now historical: Product's
+  `domain_registry.pipeline_status` is `live`, same as Customer's, and every
+  domain-scoped endpoint serves it normally. One gap remains open by explicit
+  choice: **Product's incremental load path is not yet implemented** — see "Product
+  domain onboarding" above.
 - The AI remediation heuristic fallback (`api/ai_remediation.py`) only generalizes for
   the Customer domain (`HEURISTIC_FALLBACK_DOMAINS`) — its email/state/country
   pattern-matching heuristics are meaningful for that field set specifically. Every
@@ -739,8 +933,11 @@ both a bronze and a gold node, no console errors.
 ## Repo structure
 
 ```
-data/                  synthetic CRM+ERP source data generator (Faker-based, ~100 rows/source,
-                        Customer domain) -- domain_key is config inside the script, not a CLI arg
+data/                  synthetic source data generators (Faker-based; domain_key is config
+                        inside each script, not a CLI arg): generate_source_data.py
+                        (Customer domain, CRM+ERP CSV, ~100 rows/source) and
+                        generate_product_source_data.py (Product domain, ERP+PLM CSV plus
+                        a SUPPLIER xlsx, ~85-90 rows/source; no --incremental mode yet)
 scripts/                load_bronze.py (also writes bronze.load_batches, domain_key-scoped),
                         generate_matches.py (fuzzy match/merge, loops over every domain
                         gold_prep has silver data for; also enforces the Match Review hold),
@@ -770,7 +967,8 @@ dbt_project/            seeds (only lineage_edges.csv -- everything else migrate
                         mapped_attributes.sql (standardizes raw fields into canonical
                         attribute keys per governance.source_field_mappings),
                         transform_expr.sql (standardization handlers: trim/proper_case/
-                        upper_trim/lowercase_trim/phone_e164_us), validation_block.sql
+                        upper_trim/lowercase_trim/phone_e164_us/numeric_extract),
+                        validation_block.sql
                         (the current reject-rule generator, reads bus_rules.column_rules),
                         rule_type_expr.sql (column_rules.rule_type handler registry:
                         not_null/regex/reference_state/reference_country), proper_case.sql,
@@ -789,7 +987,9 @@ portal_app/frontend/        login-gated portal: Home (domain relationship diagra
                         governance graph, admin, and an Approvals view (plain HTML/JS)
 requirements.txt        pinned deps (duckdb==1.5.4 -- NOT the same version number as the
                         dbt-duckdb adapter, a mistake made once already, worth double-checking;
-                        also mcp>=1.9,<2.0 and croniter for the MCP agent orchestration layer)
+                        also mcp>=1.9,<2.0 and croniter for the MCP agent orchestration layer,
+                        and openpyxl for pandas' xlsx read path, needed for Product's
+                        SUPPLIER source)
 README.md               Windows-first setup instructions (PowerShell), plus macOS/Linux
 ```
 
@@ -824,9 +1024,11 @@ README.md               Windows-first setup instructions (PowerShell), plus macO
   for the full scope. All six planned phases (metadata foundation, generic bronze/silver,
   generic gold, domain-scoped API, domain-agnostic frontend, full regression + docs) are
   complete as of this pass, including the maker-checker approval-flow end-to-end test and
-  the Lineage tab fix. Remaining, deliberately out of scope for this pass: Product (or any
-  second domain) getting a real pipeline — it stays metadata-only by design, to prove the
-  platform's shape without needing a second full dataset/rules configuration.
+  the Lineage tab fix. Product (or any second domain) getting a real pipeline was
+  deliberately out of scope for that pass, kept metadata-only to prove the platform's
+  shape without needing a second full dataset/rules configuration — see "Product domain
+  onboarding" above for where that has since happened, and its own remaining gap
+  (incremental loads, explicitly deferred).
 - CCA-F (Claude Certified Architect – Foundations) certification is a separate, unrelated
   thread the user is pursuing — exam access is gated behind the Claude Partner Network with
   no individual registration path found so far; using Skilljar course-completion
