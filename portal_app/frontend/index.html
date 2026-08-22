@@ -73,6 +73,11 @@
     padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; border-radius: 0;
   }
   .view-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+  /* Phase 6 (nav domain-gating): Dashboard/Browse/Approvals are meaningless
+     until a domain is entered from Home -- disabled buttons stay clickable-
+     looking-but-inert with a native title tooltip ("Please select a domain")
+     rather than disappearing, so the user can see the feature exists. */
+  .view-tab:disabled { opacity: 0.4; cursor: not-allowed; }
   nav .dropdown { position: relative; }
   nav .dropdown-menu {
     display: none; position: absolute; top: 36px; left: 0; background: var(--panel-raised);
@@ -940,7 +945,22 @@ async function enterApp() {
   // change rarely (metadata), and every domain-scoped screen wants
   // domainsList already populated before it can gate on has_access.
   await loadDomainsAndRelationships();
+  updateNavDomainGating();
   showView('home');
+}
+
+// Phase 6 (nav domain-gating): Dashboard/Browse Records/Approvals only make
+// sense once a domain has been entered from Home -- disable them (native
+// title tooltip explains why) until currentDomain is set, then re-enable
+// once enterDomain() picks one. Called on login and every time currentDomain
+// changes (currently just enterDomain(), since there's no "leave domain"
+// action yet).
+function updateNavDomainGating() {
+  ['navDashboard', 'navBrowse', 'navApprovals'].forEach(id => {
+    const btn = document.getElementById(id);
+    btn.disabled = !currentDomain;
+    btn.title = currentDomain ? '' : 'Please select a domain';
+  });
 }
 
 // On load, if another tab/app (e.g. the Data Stewardship console) already
@@ -985,6 +1005,7 @@ async function doLogin() {
 async function doLogout() {
   await fetch(`${API}/auth/logout`, { method: 'POST', headers: authHeaders() });
   clearSession();
+  currentDomain = null;   // otherwise the next login on this tab would inherit the previous user's domain
   document.getElementById('appShell').style.display = 'none';
   document.getElementById('loginScreen').style.display = 'flex';
   document.getElementById('loginPassword').value = '';
@@ -1322,8 +1343,16 @@ document.addEventListener('click', (e) => {
 // cross-tab state of its own. Caveat: this only recognizes tabs opened via
 // this button; a Stewardship tab opened by directly visiting /app/ won't be
 // detected as "already open" and a second tab would be opened alongside it.
+// Phase 6: if a domain has already been entered here in the portal, carry it
+// over as a URL query param -- the Stewardship console reads ?domain=... on
+// load and, when it names a domain this user can access, skips its own Home
+// diagram and lands straight on that domain's Dashboard (requirement: "if
+// user successfully navigates to data stewardship from the portal ... that
+// knowledge should be considered"). No domain selected yet -> plain /app/,
+// same as before, and Stewardship shows its own Home diagram instead.
 function launchStewardshipApp() {
-  const stewardshipTab = window.open('/app/', 'mdmStewardshipTab');
+  const url = currentDomain ? `/app/?domain=${encodeURIComponent(currentDomain.domain_key)}` : '/app/';
+  const stewardshipTab = window.open(url, 'mdmStewardshipTab');
   if (stewardshipTab) stewardshipTab.focus();
   document.getElementById('govDropdown').classList.remove('open');
 }
@@ -2290,7 +2319,7 @@ function renderApprovalRecordSection(inst, rec) {
     if (!rec) return '<div class="dash-empty">Could not load the underlying match pair.</div>';
     return `
       <div class="record-header" style="margin-top:4px;">
-        <h2 style="font-size:17px;">Possible duplicate</h2>
+        <h2 style="font-size:17px;">Possible match</h2>
         <span class="source-badge">pair ${inst.entity_id.slice(0, 8)}…</span>
       </div>
       ${matchRecordFormHtml(rec)}
@@ -2696,6 +2725,7 @@ async function enterDomain(domainKey) {
   }
   currentDomain = domain;
   document.getElementById('navBrowse').textContent = `Browse ${domain.entity_label_plural}`;
+  updateNavDomainGating();
   await getDomainAttributes(domainKey);
   showView('dashboard');
 }

@@ -346,8 +346,12 @@ already does across every active domain.
 
 ## Applications
 
-1. **Data Stewardship console** (`/app/`) — four tabs, all metadata-driven off whichever
-   domain(s) the logged-in user can access.
+1. **Data Stewardship console** (`/app/`) — four tabs, scoped to one selected domain
+   at a time (`stewardshipDomain`, carried over from the portal's `currentDomain` via
+   a `?domain=` query param, or picked from the console's own Home
+   relationship-diagram tab when opened directly — see "Stewardship console
+   navigation & domain-scoping" below), fully metadata-driven for whichever domain is
+   currently active.
    - **Dashboard** (landing tab on login) — one screen, two panes: Exceptions and
      Match Review. Each pane has KPI cards for its status breakdown (Exceptions:
      open/in_review/resolved/rejected; Match Review: pending/in_review/confirmed/
@@ -356,7 +360,10 @@ already does across every active domain.
      buckets computed live off `bus_rules.matching_thresholds`, not hardcoded), a
      pie chart for Match Review's status breakdown, a "Your Activity" row
      (Submitted/Approved/Pending/Sent back, scoped to the logged-in user via
-     `governance.workflow_instances.maker_user_id`), and a trend chart (Exceptions:
+     `governance.workflow_instances.maker_user_id`, and — since this pass — also
+     scoped to the selected domain via `_my_workflow_activity`'s new `domain_key`
+     param; see "Stewardship console navigation & domain-scoping" below), and a
+     trend chart (Exceptions:
      created vs. resolved vs. rejected per day). Every element except the trend
      chart is clickable and navigates to the Exception Queue or Match Review tab,
      pre-filtered to exactly that slice — a chart's count and its drill-through
@@ -471,8 +478,11 @@ already does across every active domain.
    - **Data Governance** (nav dropdown, four items; the first two are role-gated,
      the last two are visible to every signed-in user since they're read-only
      outside dataSteward/dataOwner):
-     - **Data Stewardship** — visible only to `dataSteward`/`dataOwner`. Opens
-       `/app/` via `window.open('/app/', 'mdmStewardshipTab')`.
+     - **Data Stewardship** — visible only to `dataSteward`/`dataOwner`. Opens via
+       `launchStewardshipApp()`, still `window.open(..., 'mdmStewardshipTab')` (same
+       named-tab reuse as before), but now targeting `/app/?domain=<domain_key>` when
+       the portal's own `currentDomain` is set, falling back to plain `/app/`
+       otherwise — see "Stewardship console navigation & domain-scoping" below.
      - **Lineage and Impact Analysis** — visible with `read`/`read_write` access
        to at least one domain; `/api/v1/lineage/*` stays open to any
        authenticated user regardless of domain access (pipeline metadata, not
@@ -746,6 +756,126 @@ has only ever been exercised against Customer's generator output — Product's
 `bronze.load_control` rows exist and a full load works, but the incremental path
 for this domain is unverified and explicitly deferred, not silently assumed to
 work.
+
+## Stewardship console navigation & domain-scoping (this pass)
+
+Until this pass, the Stewardship console (`stewardship_app/frontend/index.html`) was
+deliberately domain-agnostic/cross-domain — every tab mixed every domain a steward
+could see, with no "current domain" concept at all (each record just carried its own
+`domain_key` for per-record attribute lookups, same as it always has). This pass gave
+it a real per-session "selected domain" concept, mirroring the portal's
+`currentDomain`, and wired up navigation between the two apps. Four pieces:
+
+**1. Domain carries over from portal to Stewardship.** The portal's
+`launchStewardshipApp()` (previously just `window.open('/app/', 'mdmStewardshipTab')`)
+now opens `/app/?domain=<domain_key>` when the portal's own `currentDomain` is set,
+falling back to plain `/app/` when it isn't (tab-name reuse via `'mdmStewardshipTab'`
+is unchanged). Stewardship reads `?domain=` off `window.location.search` in a new
+`determineInitialView()` function, called from `enterApp()` right after
+`loadDomainsList()`. If the named domain exists, the user `has_access`, and it has a
+live pipeline (`pipeline_status === 'live'`) — the same gates the portal itself
+applies in `enterDomain()` — it sets Stewardship's own new `stewardshipDomain` global
+and jumps straight to that domain's Dashboard. Otherwise it falls through to (2).
+
+**2. Stewardship's own Home diagram, for direct logins.** Opening Stewardship with no
+valid `?domain=` now lands on a brand-new "Home" tab: a pannable/zoomable
+domain-relationship diagram ported essentially verbatim from the portal's own Home
+tab — same SVG pan/zoom mechanics (drag to pan, wheel to zoom, fit-to-view on first
+render) and the same node/edge visual language (domain nodes color-coded
+live-access/planned/locked, diamond-shaped relationship link nodes). New CSS
+(`.home-node-box`, `.home-edge-line`, `.home-link-node`, `.home-lock-icon`,
+`.home-intro`, `.home-legend`, `.legend-dot`, `#homeCanvasWrap`, plus a new
+`--blue-dim` CSS variable) and a new `escapeXml()` helper (distinct from
+Stewardship's pre-existing `escapeApprovalText()`, which serves a different escaping
+context) were added. Clicking a domain node calls a new `enterStewardshipDomain(domainKey)`
+function — mirrors the portal's `enterDomain()`: same access/pipeline-status gating,
+same toast messages on a locked or not-yet-available domain — which sets
+`stewardshipDomain` and switches to that domain's Dashboard. A persistent "Home" tab
+button was also added to the Stewardship nav bar (not explicitly required, but a
+low-risk way to let a steward switch domains later without logging out —
+`switchView('home')` is always reachable regardless of whether a domain is currently
+selected).
+
+**3. Domain name in the header; all four tabs genuinely scoped to it.** The header's
+`<h1>Data Stewardship Console</h1>` now has a `<span id="headerDomainSuffix">`
+appended, updated by a new `updateHeaderDomainSuffix()` function to read e.g. "
+(Product)" once `stewardshipDomain` is set — so the header reads "Data Stewardship
+Console (Product)". Per tab:
+   - **Exception Queue / Match Review** — `GET /stewardship/queue` and
+     `GET /stewardship/match-review` already accepted an optional `domain_key` query
+     param server-side (pre-existing, previously used only by the portal's own
+     per-domain drill-throughs, unused by this console). The console's
+     `buildQueueParams()` helper (the single choke point both queue-loading
+     functions build their query params through) now appends
+     `domain_key=stewardshipDomain.domain_key` whenever it's set.
+   - **Dashboard** — `GET /stewardship/dashboard/exceptions-summary` and
+     `GET /stewardship/dashboard/match-review-summary` also already accepted an
+     optional `domain_key` (pre-existing). `loadDashboard()` now appends it to both
+     fetch URLs. The one part of those two summaries that was NOT already
+     domain-aware was the "Your Activity" widget: its backend helper
+     `_my_workflow_activity(workflow_type, user_id)` in `api/main.py` counted a
+     user's own workflow submissions across ALL domains regardless of the
+     `domain_key` filter applied to the rest of the summary. Fixed by adding an
+     optional third parameter, `domain_key=None`: when set, for
+     `workflow_type='stewardship_remediation'` it filters to `entity_id IN (SELECT
+     exception_id FROM main_silver.exceptions_queue WHERE domain_key = ?)`, and for
+     `'match_review_confirmation'` to `entity_id IN (SELECT pair_id FROM
+     main_gold.gold_match_review_queue WHERE domain_key = ?)` — because
+     `governance.workflow_instances` itself has no `domain_key` column; a workflow
+     instance's domain is only knowable by joining out to whichever queue table owns
+     its `entity_id`. Both call sites in `api/main.py` (the two dashboard summary
+     endpoints) now pass `domain_key` through. Verified directly against the
+     project's DuckDB file that both queue tables have real `domain_key`-tagged rows
+     for both Customer and Product (Product: 27 exceptions / 28 match-review
+     candidates; Customer: 16 / 2) and that the new SQL shape runs cleanly.
+   - **Approvals** — this one had no existing `domain_key` filter to reuse.
+     `GET /workflows/pending` and `GET /workflows/mine` return workflow instances of
+     ANY workflow type across the whole platform, and — critically — not every
+     workflow payload carries a `domain_key` (a `match_review_confirmation`
+     instance's payload is just `{steward_note}`; only some `stewardship_remediation`
+     instances' payloads happen to include one, depending on `action_type`). Rather
+     than touch that shared endpoint (used by both apps, for six workflow types
+     total) or add a new column to `governance.workflow_instances` (out of scope for
+     this pass), domain-scoping was done client-side in the Stewardship console only:
+     a new `domainScopedEntityIdSets(domainKey)` function fetches the full
+     (`status=all`) exception-id set and pair-id set for the selected domain from the
+     two already-domain-filterable queue endpoints, and `loadApprovalsQueue()` now
+     filters its (pre-existing) type-restricted instance list — Stewardship's
+     Approvals tab only ever originates `stewardship_remediation`/
+     `match_review_confirmation` instances, via the pre-existing
+     `STEWARDSHIP_WORKFLOW_TYPES` constant — down to just the instances whose
+     `entity_id` is in the matching set.
+   - A guard was added to `switchView()`: if the requested view isn't `'home'` and
+     `stewardshipDomain` isn't set, it falls back to `'home'` — mirroring the
+     portal's own pre-existing Dashboard/Browse-to-Home guard — so none of the four
+     scoped tabs can ever render with nothing to scope to.
+   - `doLogout()` now resets `stewardshipDomain = null` (an analogous latent gap was
+     also fixed in the portal's own `doLogout()`, resetting `currentDomain = null`) so
+     a second login in the same browser tab can't silently inherit the previous
+     user's domain selection.
+
+**4. Portal Home page: Dashboard/Browse/Approvals nav disabled with no domain
+selected.** A new `updateNavDomainGating()` function in
+`portal_app/frontend/index.html` sets `.disabled = true` and
+`title = 'Please select a domain'` on the `navDashboard`/`navBrowse`/`navApprovals`
+nav buttons whenever `currentDomain` is null, clearing both once a domain is entered.
+Called from `enterApp()` (initial post-login state) and from `enterDomain()` (right
+after `currentDomain` is set). New CSS: `.view-tab:disabled { opacity: 0.4; cursor:
+not-allowed; }`. The native `title` attribute is what shows "Please select a domain"
+as a hover tooltip — no custom tooltip component needed. This only gates the *nav
+buttons themselves*; it does not change what the portal's own Approvals tab shows
+(that tab was and remains cross-domain in the portal, unlike Stewardship's now-scoped
+one — out of scope for this ask, which was specifically about disabling the menu
+options, not further scoping their content).
+
+Files touched: `portal_app/frontend/index.html`, `stewardship_app/frontend/index.html`,
+`api/main.py` (only the one `_my_workflow_activity` fix — no other backend changes).
+No new Python dependencies, no database schema changes, no dbt model changes.
+Verified: both frontend files' inline `<script>` blocks pass `node --check`;
+`api/main.py` passes `ast.parse`; the new SQL shape was smoke-tested directly against
+the project's own `mdm_demo.duckdb`; all new/changed HTML element IDs referenced from
+JS were cross-checked against the HTML for existence, each container ID confirmed to
+appear exactly once.
 
 ## Key data model notes
 

@@ -119,9 +119,28 @@ not a rewrite of existing code.
   code while onboarding — is in `PROJECT_KNOWLEDGE.md`. **Not yet implemented for
   Product: incremental loads** — its generator and the bronze load path have only
   been exercised in full-load mode so far.
+- **Stewardship console navigation & domain-scoping** — the Data Stewardship console
+  used to be cross-domain (every tab mixed every domain a steward could see); it now
+  works one domain at a time, the same way the Portal already did. Opening the
+  console from the Portal's Data Governance menu carries the Portal's currently-
+  selected domain straight into the console — no re-picking a domain you already
+  chose. Opened directly (e.g. a bookmarked link, or a fresh login), the console
+  instead lands on its own new **Home** tab: the same pannable/zoomable
+  domain-relationship diagram the Portal uses, so a steward can pick a domain from
+  there and jump straight to its Dashboard; a "Home" button in the nav bar makes it
+  easy to switch domains later without logging out. Once a domain is selected, the
+  console's header shows it (e.g. "Data Stewardship Console (Product)"), and all
+  four tabs — Dashboard, Exception Queue, Match Review, and Approvals — are scoped
+  to just that domain, including the Dashboard's "Your Activity" counts and the
+  Approvals queue (previously the one tab with no domain filtering at all). On the
+  Portal side, the Dashboard/Browse/Approvals nav items are now disabled (with a
+  "Please select a domain" tooltip) until a domain has actually been selected from
+  the Home page, so there's no way to land on a screen with nothing to show.
 - **Data Stewardship app** (`/app/`) — restricted to `dataSteward` / `dataOwner`
-  accounts, four tabs, all metadata-driven off the caller's accessible domain(s). A
-  **Dashboard** (the landing tab on login) gives an at-a-glance view of both queues:
+  accounts, four tabs scoped to one selected domain at a time (carried over from the
+  portal, or picked from the console's own Home diagram — see "Stewardship console
+  navigation & domain-scoping" below), metadata-driven for whichever domain is
+  active. A **Dashboard** (the landing tab on login) gives an at-a-glance view of both queues:
   status/reason/trend charts for exceptions and status/similarity-bucket charts for
   Match Review, plus a "your activity" count of what you've personally
   submitted/had approved/sent back. Every chart element and count is clickable — it
@@ -572,13 +591,13 @@ Enable AI remediation with `export ANTHROPIC_API_KEY=your_key_here` before start
 | `POST /api/v1/admin/users` | Submit a new-user request, including initial per-domain access (admin role required; a different admin must approve) |
 | `PUT /api/v1/admin/users/{user_id}` | Update `full_name` immediately; `role`/legacy `gold_access`/`is_active` changes submit for a different admin's approval |
 | `POST /api/v1/admin/users/{user_id}/reset_password` | Reset a user's password (admin role required; not gated by an approval) |
-| `GET /api/v1/stewardship/queue?status=open` | Exception queue, any accessible domain (also accepts `status=all`, `reason=`, or `activity=` for dashboard drill-throughs) |
-| `GET /api/v1/stewardship/dashboard/exceptions-summary` | Exception Dashboard aggregate: status/reason breakdown, created-vs-resolved-vs-rejected trend, caller's own activity |
+| `GET /api/v1/stewardship/queue?status=open` | Exception queue, any accessible domain (also accepts `status=all`, `reason=`, `activity=` for dashboard drill-throughs, or `domain_key=` to scope to one domain) |
+| `GET /api/v1/stewardship/dashboard/exceptions-summary` | Exception Dashboard aggregate: status/reason breakdown, created-vs-resolved-vs-rejected trend, caller's own activity (all optionally `domain_key=` scoped) |
 | `POST /api/v1/stewardship/queue/{id}/suggest` | Get AI/heuristic remediation suggestion |
 | `POST /api/v1/stewardship/queue/{id}/resolve` | Submit a correction for Data Owner approval (reprocesses once approved) |
 | `POST /api/v1/stewardship/queue/{id}/reject` | Submit a rejection for Data Owner approval |
-| `GET /api/v1/stewardship/match-review?status=pending` | Borderline fuzzy-match candidates (dataSteward/dataOwner role required; also accepts `status=all`, `similarity_bucket=`, or `activity=` for dashboard drill-throughs) |
-| `GET /api/v1/stewardship/dashboard/match-review-summary` | Match Review Dashboard aggregate: status breakdown, similarity-score buckets, caller's own activity |
+| `GET /api/v1/stewardship/match-review?status=pending` | Borderline fuzzy-match candidates (dataSteward/dataOwner role required; also accepts `status=all`, `similarity_bucket=`, `activity=` for dashboard drill-throughs, or `domain_key=` to scope to one domain) |
+| `GET /api/v1/stewardship/dashboard/match-review-summary` | Match Review Dashboard aggregate: status breakdown, similarity-score buckets, caller's own activity (all optionally `domain_key=` scoped) |
 | `GET /api/v1/stewardship/match-review/{pair_id}` | One match-review candidate pair, full side-by-side detail |
 | `POST /api/v1/stewardship/match-review/{pair_id}/confirm` | Submit a confirm decision for approval (Data Owner, then Admin) |
 | `POST /api/v1/stewardship/match-review/{pair_id}/reject` | Submit a reject decision for approval (Data Owner, then Admin) |

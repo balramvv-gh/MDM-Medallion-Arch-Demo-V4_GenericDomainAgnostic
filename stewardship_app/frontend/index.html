@@ -19,6 +19,7 @@
     --red: #e05a5a;
     --green: #5bc98a;
     --blue: #5b8ce0;
+    --blue-dim: #1e2c40;
     --mono: 'JetBrains Mono', monospace;
     --sans: 'Manrope', sans-serif;
   }
@@ -293,6 +294,40 @@
   }
   .filter-clear-btn:hover { background: rgba(224,90,90,0.1); }
 
+  /* ---------- Home: domain relationship diagram ----------
+     Ported from portal_app's Home tab (same pan/zoom-on-SVG mechanics, same
+     node/edge visual language) for the "logged in directly, not from the
+     portal" landing view -- clicking a domain here sets stewardshipDomain
+     and jumps to that domain's Dashboard, same as portal_app's enterDomain(). */
+  .home-intro { color: var(--text-dim); font-size: 13px; margin: 20px 40px 0; max-width: 640px; }
+  .home-legend { display: flex; align-items: center; gap: 20px; margin: 14px 40px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .legend-hint { margin-left: auto; font-family: var(--mono); font-size: 11px; }
+  #homeCanvasWrap {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    height: 460px; overflow: hidden; position: relative; cursor: grab;
+    margin: 0 40px 24px;
+  }
+  #homeCanvasWrap.grabbing { cursor: grabbing; }
+  #homeCanvasWrap svg { display: block; }
+  .home-node-box { cursor: pointer; }
+  .home-node-box rect { stroke-width: 2; transition: opacity 0.12s ease, filter 0.12s ease; }
+  .home-node-box.live-access rect { fill: var(--blue-dim); stroke: var(--blue); }
+  .home-node-box.live-access text.home-node-title { fill: var(--text); }
+  .home-node-box.planned rect { fill: var(--panel-raised); stroke: var(--amber); stroke-dasharray: 4 3; }
+  .home-node-box.planned text.home-node-title { fill: var(--text); }
+  .home-node-box.locked rect { fill: var(--panel-raised); stroke: var(--border); opacity: 0.55; }
+  .home-node-box.locked text.home-node-title { fill: var(--text-dim); }
+  .home-node-box:hover rect { filter: brightness(1.15); }
+  .home-node-box text.home-node-title { font-family: var(--sans); font-size: 13px; font-weight: 700; pointer-events: none; }
+  .home-node-box text.home-node-sub { fill: var(--text-dim); font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em; pointer-events: none; }
+  .home-link-node { cursor: pointer; }
+  .home-link-node polygon { fill: var(--amber-dim); stroke: var(--amber); stroke-width: 1.5; }
+  .home-link-node:hover polygon { filter: brightness(1.2); }
+  .home-link-node text { fill: var(--amber); font-family: var(--mono); font-size: 9px; text-anchor: middle; pointer-events: none; }
+  .home-edge-line { stroke: var(--border); stroke-width: 1.4; fill: none; }
+  .home-lock-icon { fill: var(--text-dim); font-family: var(--mono); font-size: 11px; pointer-events: none; }
+
   /* ---------- Match review comparison ---------- */
   .match-item .qscore {
     font-family: var(--mono); font-size: 11px; color: var(--amber);
@@ -476,7 +511,7 @@
 <div id="appShell" style="display:none;">
 <header>
   <div class="brand">
-    <h1>Data Stewardship Console</h1>
+    <h1>Data Stewardship Console<span id="headerDomainSuffix"></span></h1>
     <span class="tag">MDM DEMO</span>
   </div>
   <div class="header-right">
@@ -490,6 +525,7 @@
 </header>
 
 <div class="view-tabs">
+  <button class="view-tab" id="tabHome" onclick="switchView('home')">Home</button>
   <button class="view-tab" id="tabDashboard" onclick="switchView('dashboard')">Dashboard</button>
   <button class="view-tab" id="tabExceptions" onclick="switchView('exceptions')">Exception Queue</button>
   <button class="view-tab" id="tabMatchReview" onclick="switchView('matchReview')">Match Review</button>
@@ -498,6 +534,26 @@
     <span class="filter-banner-text" id="filterBannerText"></span>
     <button class="filter-clear-btn" onclick="clearDashboardFilter()">Clear</button>
   </span>
+</div>
+
+<!-- Home: domain relationship diagram. Only the landing view when this
+     console is opened directly (no ?domain= from the portal) -- ported from
+     portal_app's own Home tab; clicking a domain sets stewardshipDomain and
+     jumps straight to that domain's Dashboard here. -->
+<div id="homeView" style="display:none;">
+  <div class="home-intro">
+    Every domain this platform knows about, and how they relate. Pick the domain you want to steward --
+    the Dashboard, Exception Queue, Match Review and Approvals tabs will scope to it.
+  </div>
+  <div class="home-legend">
+    <span><i class="legend-dot" style="background:var(--blue);"></i> Open (you have access)</span>
+    <span><i class="legend-dot" style="background:var(--amber);"></i> Planned (no pipeline yet)</span>
+    <span><i class="legend-dot" style="background:var(--text-dim);"></i> No access</span>
+    <span class="legend-hint" style="margin-left:auto;">Drag to pan, scroll to zoom.</span>
+  </div>
+  <div id="homeCanvasWrap">
+    <div class="empty-state" id="homeLoadingState" style="padding-top:80px;">Loading domains…</div>
+  </div>
 </div>
 
 <div id="dashboardView">
@@ -551,18 +607,38 @@ function authHeaders() {
 // Phase 5 (domain-agnostic): every domain this account knows about (for
 // display_name lookups), and a per-domain cache of governance.domain_attributes
 // (for building field lists on the fly). Exceptions, match-review pairs, and
-// gold records all carry their own domain_key, and this console's queues
-// deliberately mix every domain a steward can see (see enterApp() above) --
-// so, unlike portal_app's single currentDomain, there is no one "current"
-// domain here; every record-rendering function below looks up attributes by
-// that record's own domain_key.
+// gold records all carry their own domain_key. Every record-rendering
+// function below still looks up attributes by that record's own domain_key
+// (not assuming it matches stewardshipDomain) so nothing breaks if that ever
+// diverges -- but as of Phase 6, this console *does* have one "current"
+// domain, mirroring portal_app's currentDomain: stewardshipDomain, set either
+// from the ?domain=... the portal's "Data Stewardship" link carries over, or
+// by clicking a domain on this app's own Home diagram (see enterStewardshipDomain
+// below). Dashboard/Exception Queue/Match Review/Approvals are all scoped to
+// it (via domain_key query params -- see buildQueueParams/loadDashboard/
+// loadApprovalsQueue) once it's set; nothing here is reachable until it is.
 // ---------------------------------------------------------------------------
 let domainsList = [];
+let domainRelationships = [];
+let stewardshipDomain = null;
 const domainAttrsCache = {};
 
 async function loadDomainsList() {
-  const res = await fetch(`${API}/domains`, { headers: authHeaders() });
-  domainsList = res.ok ? (await res.json()).domains : [];
+  const [domRes, relRes] = await Promise.all([
+    fetch(`${API}/domains`, { headers: authHeaders() }),
+    fetch(`${API}/domains/relationships`, { headers: authHeaders() }),
+  ]);
+  domainsList = domRes.ok ? (await domRes.json()).domains : [];
+  domainRelationships = relRes.ok ? (await relRes.json()).relationships : [];
+}
+
+// Reflects stewardshipDomain in the header, e.g. "Data Stewardship Console
+// (Product)" -- shown once a domain is selected, for every one of the four
+// domain-scoped tabs (and left on while the Home diagram is showing too, so
+// switching back to a scoped tab never causes a flash of the un-suffixed title).
+function updateHeaderDomainSuffix() {
+  const el = document.getElementById('headerDomainSuffix');
+  el.textContent = stewardshipDomain ? ` (${stewardshipDomain.display_name})` : '';
 }
 
 async function getDomainAttributes(domainKey) {
@@ -580,6 +656,155 @@ async function getDomainAttributes(domainKey) {
 async function warmDomainAttrsFor(items, domainKeyField) {
   const keys = Array.from(new Set(items.map(it => it[domainKeyField]).filter(Boolean)));
   await Promise.all(keys.map(k => getDomainAttributes(k)));
+}
+
+// ---------------------------------------------------------------------------
+// Home: domain relationship diagram (ported from portal_app's Home tab --
+// same layout/pan/zoom mechanics and node/edge visual language, own transform
+// state so it can't collide with anything else in this app). Only shown when
+// this console is entered directly, with no ?domain= carried over from the
+// portal -- see determineInitialView() near enterApp() below.
+// ---------------------------------------------------------------------------
+let homeTransform = { x: 40, y: 20, scale: 1 };
+let homeInitialTransform = { x: 40, y: 20, scale: 1 };
+let homePanState = null;
+
+const HOME_NODE_W = 200, HOME_NODE_H = 60, HOME_COL_W = 280, HOME_ROW_Y = 60;
+const HOME_LINK_SIZE = 46;
+
+function homeNodeClass(domain) {
+  if (!domain.has_access) return 'locked';
+  if (domain.pipeline_status !== 'live') return 'planned';
+  return 'live-access';
+}
+
+function homeStatusLabel(domain) {
+  if (!domain.has_access) return 'NO ACCESS';
+  if (domain.pipeline_status !== 'live') return 'PLANNED';
+  return domain.access_level.toUpperCase();
+}
+
+function escapeXml(str) {
+  return String(str).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+}
+
+function renderHomeGraph() {
+  const wrap = document.getElementById('homeCanvasWrap');
+  if (!domainsList.length) {
+    wrap.innerHTML = '<div class="empty-state" style="padding-top:80px;">No domains configured.</div>';
+    return;
+  }
+
+  const domainX = {};
+  domainsList.forEach((d, i) => { domainX[d.domain_key] = i * HOME_COL_W + 40; });
+  const midXCounts = {};
+
+  let svg = `<svg id="homeSvg" width="100%" height="100%" viewBox="0 0 1200 460" xmlns="http://www.w3.org/2000/svg">`;
+  svg += `<rect id="homeBackground" x="-5000" y="-5000" width="10000" height="10000" fill="transparent"/>`;
+  svg += `<g id="homeRoot" transform="translate(${homeTransform.x},${homeTransform.y}) scale(${homeTransform.scale})">`;
+
+  domainRelationships.forEach((rel, i) => {
+    const xa = domainX[rel.domain_a_key], xb = domainX[rel.domain_b_key];
+    if (xa === undefined || xb === undefined) return;
+    const midKey = Math.round((xa + xb) / 2);
+    const stackIdx = midXCounts[midKey] || 0;
+    midXCounts[midKey] = stackIdx + 1;
+    const lx = (xa + xb) / 2 + HOME_NODE_W / 2;
+    const ly = HOME_ROW_Y + HOME_NODE_H + 90 + stackIdx * 80;
+
+    const y1 = HOME_ROW_Y + HOME_NODE_H, y2 = HOME_ROW_Y + HOME_NODE_H;
+    svg += `<path class="home-edge-line" d="M${xa + HOME_NODE_W / 2},${y1} C${xa + HOME_NODE_W / 2},${ly} ${lx},${ly} ${lx},${ly}"/>`;
+    svg += `<path class="home-edge-line" d="M${xb + HOME_NODE_W / 2},${y2} C${xb + HOME_NODE_W / 2},${ly} ${lx},${ly} ${lx},${ly}"/>`;
+
+    const s = HOME_LINK_SIZE;
+    svg += `<g class="home-link-node" data-rel-idx="${i}">
+      <polygon points="${lx},${ly - s / 2} ${lx + s / 2},${ly} ${lx},${ly + s / 2} ${lx - s / 2},${ly}">
+        <title>${escapeXml(rel.relationship_label)}: ${escapeXml(rel.description || '')}</title>
+      </polygon>
+      <text x="${lx}" y="${ly + 3}">LINK</text>
+    </g>`;
+  });
+
+  domainsList.forEach(d => {
+    const x = domainX[d.domain_key], y = HOME_ROW_Y;
+    const cls = homeNodeClass(d);
+    svg += `<g class="home-node-box ${cls}" data-domain="${escapeXml(d.domain_key)}">
+      <rect x="${x}" y="${y}" width="${HOME_NODE_W}" height="${HOME_NODE_H}" rx="10"/>
+      <text class="home-node-title" x="${x + 16}" y="${y + 24}">${escapeXml(d.display_name)}</text>
+      <text class="home-node-sub" x="${x + 16}" y="${y + 42}">${escapeXml(homeStatusLabel(d))}</text>
+      ${!d.has_access ? `<text class="home-lock-icon" x="${x + HOME_NODE_W - 24}" y="${y + 24}">🔒</text>` : ''}
+    </g>`;
+  });
+
+  svg += `</g></svg>`;
+  wrap.innerHTML = svg;
+
+  wrap.querySelectorAll('.home-node-box').forEach(el => {
+    el.addEventListener('click', ev => { ev.stopPropagation(); enterStewardshipDomain(el.dataset.domain); });
+  });
+  wrap.querySelectorAll('.home-link-node').forEach(el => {
+    el.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const rel = domainRelationships[parseInt(el.dataset.relIdx, 10)];
+      if (rel) showToast(`${rel.relationship_label}: ${rel.description || ''}`);
+    });
+  });
+
+  if (homeInitialTransform.computed !== true) {
+    const contentW = domainsList.length * HOME_COL_W + 80;
+    const scale = Math.min(1, 1100 / contentW);
+    homeTransform = { x: 40, y: 20, scale: scale > 0 ? scale : 1 };
+    homeInitialTransform = { ...homeTransform, computed: true };
+    applyHomeTransform();
+  }
+  attachHomePanHandlers(wrap);
+}
+
+function applyHomeTransform() {
+  const root = document.getElementById('homeRoot');
+  if (root) root.setAttribute('transform', `translate(${homeTransform.x},${homeTransform.y}) scale(${homeTransform.scale})`);
+}
+
+function attachHomePanHandlers(wrap) {
+  wrap.onmousedown = (e) => {
+    if (e.target.closest('.home-node-box') || e.target.closest('.home-link-node')) return;
+    homePanState = { startX: e.clientX, startY: e.clientY, origX: homeTransform.x, origY: homeTransform.y };
+    wrap.classList.add('grabbing');
+  };
+  window.addEventListener('mousemove', (e) => {
+    if (!homePanState) return;
+    homeTransform.x = homePanState.origX + (e.clientX - homePanState.startX);
+    homeTransform.y = homePanState.origY + (e.clientY - homePanState.startY);
+    applyHomeTransform();
+  });
+  window.addEventListener('mouseup', () => { homePanState = null; wrap.classList.remove('grabbing'); });
+  wrap.onwheel = (e) => {
+    e.preventDefault();
+    homeTransform.scale = Math.max(0.3, Math.min(3, homeTransform.scale * (e.deltaY < 0 ? 1.1 : 0.9)));
+    applyHomeTransform();
+  };
+}
+
+// Entering a domain from this app's own Home diagram scopes Dashboard/
+// Exception Queue/Match Review/Approvals to it, exactly like arriving with
+// ?domain=... from the portal (see determineInitialView()). Access/pipeline-
+// status gating mirrors the backend's own 403/409 so nothing shown here can
+// surprise the user once they click through.
+async function enterStewardshipDomain(domainKey) {
+  const domain = domainsList.find(d => d.domain_key === domainKey);
+  if (!domain) return;
+  if (!domain.has_access) {
+    showToast(`You don't have access to ${domain.display_name}. Ask an Admin to grant it in User Administration.`);
+    return;
+  }
+  if (domain.pipeline_status !== 'live') {
+    showToast(`The ${domain.display_name} domain has no pipeline yet — not yet available.`);
+    return;
+  }
+  stewardshipDomain = domain;
+  updateHeaderDomainSuffix();
+  await getDomainAttributes(domainKey);
+  switchView('dashboard');
 }
 
 function attrFieldPairs(domainKey) {
@@ -744,14 +969,37 @@ async function enterApp() {
   document.getElementById('userFullName').textContent = session.user.full_name;
   document.getElementById('userRoleBadge').textContent = roleLabel(session.user.role).toUpperCase();
   showScreen('appShell');
-  // Phase 5 (domain-agnostic): this console's queues are deliberately
-  // cross-domain (a steward's remit spans every domain -- see api/main.py's
-  // Phase 4 comment on the Exception Queue/Match Review staying role-gated,
-  // not domain-gated), so there's no "enter a domain" step here the way
-  // portal_app has. domainsList is still loaded once at login -- it's only
-  // used for display_name lookups (e.g. the domain-access Approvals diff).
+  // Phase 5 (domain-agnostic): every one of this console's tabs used to be
+  // deliberately cross-domain (a steward's remit spans every domain). Phase 6
+  // scopes them to one selected domain at a time instead -- see
+  // stewardshipDomain's declaration above -- so domainsList/relationships are
+  // still loaded once at login (also still used for plain display_name
+  // lookups, e.g. the domain-access Approvals diff), and then
+  // determineInitialView() decides where to land.
   await loadDomainsList();
-  switchView('dashboard');
+  determineInitialView();
+}
+
+// Requirement: "if user successfully navigates to data stewardship from the
+// portal, where he/she has already selected a domain, that knowledge should
+// be considered" -- portal_app's launchStewardshipApp() carries the domain
+// over as ?domain=<domain_key> on the /app/ URL it opens. If that's present
+// and the domain is one this user can actually open (has_access + a live
+// pipeline -- same gate as enterStewardshipDomain(), so a stale/foreign link
+// can't silently grant scope it shouldn't), skip the Home diagram and land
+// straight on that domain's Dashboard. Otherwise ("logged into data
+// stewardship directly"), land on Home -- the domain relationship diagram --
+// so the user picks a domain themselves.
+function determineInitialView() {
+  const requestedKey = new URLSearchParams(window.location.search).get('domain');
+  const requested = requestedKey && domainsList.find(d => d.domain_key === requestedKey);
+  if (requested && requested.has_access && requested.pipeline_status === 'live') {
+    stewardshipDomain = requested;
+    updateHeaderDomainSuffix();
+    getDomainAttributes(requested.domain_key).then(() => switchView('dashboard'));
+  } else {
+    switchView('home');
+  }
 }
 
 async function tryRestoreSession() {
@@ -794,13 +1042,24 @@ async function doLogout() {
     await fetch(`${API}/auth/logout`, { method: 'POST', headers: authHeaders() });
   }
   clearSession();
+  stewardshipDomain = null;   // otherwise the next login on this tab would inherit the previous user's domain
+  updateHeaderDomainSuffix();
   document.getElementById('loginPassword').value = '';
   document.getElementById('loginError').style.display = 'none';
   showScreen('loginScreen');
 }
 
 function switchView(view, keepDashboardFilter) {
+  // Dashboard/Exception Queue/Match Review/Approvals are all scoped to
+  // stewardshipDomain -- with none selected yet (arriving here some way that
+  // skipped determineInitialView's gate, or a future "leave domain" action),
+  // there's nothing to scope them to, so fall back to the Home diagram rather
+  // than rendering an empty/broken screen. Mirrors portal_app's showView()
+  // guard on Dashboard/Browse.
+  if (view !== 'home' && !stewardshipDomain) view = 'home';
+
   currentView = view;
+  document.getElementById('tabHome').classList.toggle('active', view === 'home');
   document.getElementById('tabDashboard').classList.toggle('active', view === 'dashboard');
   document.getElementById('tabExceptions').classList.toggle('active', view === 'exceptions');
   document.getElementById('tabMatchReview').classList.toggle('active', view === 'matchReview');
@@ -810,9 +1069,20 @@ function switchView(view, keepDashboardFilter) {
   // always resets to the tab's plain default view.
   if (!keepDashboardFilter) dashboardFilter = null;
 
+  const homeEl = document.getElementById('homeView');
   const dashEl = document.getElementById('dashboardView');
   const mainEl = document.getElementById('mainQueueView');
   const countWrap = document.getElementById('queueCountWrap');
+
+  if (view === 'home') {
+    homeEl.style.display = 'block';
+    dashEl.style.display = 'none';
+    mainEl.style.display = 'none';
+    countWrap.style.display = 'none';
+    renderHomeGraph();
+    return;
+  }
+  homeEl.style.display = 'none';
 
   if (view === 'dashboard') {
     dashboardFilter = null;
@@ -1081,9 +1351,13 @@ function renderMatchReviewPane(mr) {
 async function loadDashboard() {
   document.getElementById('dashPaneExceptions').innerHTML = '<div class="empty-state">Loading exceptions dashboard…</div>';
   document.getElementById('dashPaneMatchReview').innerHTML = '<div class="empty-state">Loading match review dashboard…</div>';
+  // Phase 6: scoped to stewardshipDomain -- both summary endpoints already
+  // accept an optional domain_key (added for the portal's own per-domain
+  // dashboard), so this is purely additive on top of what api/main.py already does.
+  const domainQS = stewardshipDomain ? `?domain_key=${encodeURIComponent(stewardshipDomain.domain_key)}` : '';
   const [excRes, mrRes] = await Promise.all([
-    fetch(`${API}/stewardship/dashboard/exceptions-summary`, { headers: authHeaders() }),
-    fetch(`${API}/stewardship/dashboard/match-review-summary`, { headers: authHeaders() }),
+    fetch(`${API}/stewardship/dashboard/exceptions-summary${domainQS}`, { headers: authHeaders() }),
+    fetch(`${API}/stewardship/dashboard/match-review-summary${domainQS}`, { headers: authHeaders() }),
   ]);
   const exc = excRes.ok ? await excRes.json() : null;
   const mr = mrRes.ok ? await mrRes.json() : null;
@@ -1103,6 +1377,11 @@ function buildQueueParams(defaultStatus, params) {
   } else {
     params.set('status', defaultStatus);
   }
+  // Phase 6: every queue view is scoped to stewardshipDomain -- both
+  // GET /stewardship/queue and GET /stewardship/match-review already accept
+  // domain_key (see api/main.py), so this narrows the exact same request the
+  // portal's own per-domain drill-throughs use.
+  if (stewardshipDomain) params.set('domain_key', stewardshipDomain.domain_key);
   return params;
 }
 
@@ -1404,7 +1683,7 @@ function renderMatchDetail() {
 
   panel.innerHTML = `
     <div class="record-header">
-      <h2>Possible duplicate</h2>
+      <h2>Possible match</h2>
       <span class="source-badge">pair ${item.pair_id.slice(0, 8)}…</span>
     </div>
     ${!editable ? `<div class="readonly-badge">Read-only · status: ${formatStatusLabel(item.effective_status)}</div>` : ''}
@@ -1413,7 +1692,7 @@ function renderMatchDetail() {
     ${editable ? `
     <div class="actions">
       <button class="btn-confirm" onclick="confirmMatch()">Confirm — same ${escapeApprovalText(domainEntityLabelSingular(item.domain_key))}, merge</button>
-      <button class="btn-reject" onclick="rejectMatch()">Reject — not a duplicate</button>
+      <button class="btn-reject" onclick="rejectMatch()">Reject — not a match</button>
     </div>` : ''}
   `;
 }
@@ -1642,7 +1921,7 @@ function renderApprovalRecordSection(inst, rec) {
     if (!rec) return '<div class="dash-empty">Could not load the underlying match pair.</div>';
     return `
       <div class="record-header" style="margin-top:4px;">
-        <h2 style="font-size:17px;">Possible duplicate</h2>
+        <h2 style="font-size:17px;">Possible match</h2>
         <span class="source-badge">pair ${inst.entity_id.slice(0, 8)}…</span>
       </div>
       ${matchRecordFormHtml(rec)}
@@ -1755,6 +2034,28 @@ function approvalCategoryFilterHtml() {
     </select>`;
 }
 
+// Phase 6: GET /workflows/pending and /workflows/mine have no domain_key
+// filter of their own (they span every workflow_type the portal or this
+// console originates, and not every one of those payloads carries a
+// domain_key -- e.g. match_review_confirmation's doesn't). Rather than
+// change that shared endpoint, this scopes client-side: fetch this domain's
+// full set of exception_ids and pair_ids (both queue endpoints DO already
+// accept domain_key -- see buildQueueParams above) and keep only the
+// stewardship_remediation/match_review_confirmation instances whose
+// entity_id is in the matching set.
+async function domainScopedEntityIdSets(domainKey) {
+  const [excRes, mrRes] = await Promise.all([
+    fetch(`${API}/stewardship/queue?status=all&domain_key=${encodeURIComponent(domainKey)}&limit=10000&offset=0`, { headers: authHeaders() }),
+    fetch(`${API}/stewardship/match-review?status=all&domain_key=${encodeURIComponent(domainKey)}&limit=10000&offset=0`, { headers: authHeaders() }),
+  ]);
+  const excItems = excRes.ok ? (await excRes.json()).items : [];
+  const mrItems = mrRes.ok ? (await mrRes.json()).items : [];
+  return {
+    exceptionIds: new Set(excItems.map(i => i.exception_id)),
+    pairIds: new Set(mrItems.map(i => i.pair_id)),
+  };
+}
+
 async function loadApprovalsQueue() {
   const pagerKey = 'stew_approvals_' + approvalsMode;
   pagerState(pagerKey, loadApprovalsQueue);
@@ -1766,7 +2067,14 @@ async function loadApprovalsQueue() {
   const res = await fetch(`${base}?limit=10000&offset=0`, { headers: authHeaders() });
   if (!res.ok) return;
   const raw = await res.json();
-  const scoped = raw.items.filter(inst => STEWARDSHIP_WORKFLOW_TYPES.includes(inst.workflow_type));
+  let scoped = raw.items.filter(inst => STEWARDSHIP_WORKFLOW_TYPES.includes(inst.workflow_type));
+  if (stewardshipDomain) {
+    const { exceptionIds, pairIds } = await domainScopedEntityIdSets(stewardshipDomain.domain_key);
+    scoped = scoped.filter(inst =>
+      (inst.workflow_type === 'stewardship_remediation' && exceptionIds.has(inst.entity_id)) ||
+      (inst.workflow_type === 'match_review_confirmation' && pairIds.has(inst.entity_id))
+    );
+  }
   const filtered = approvalsCategoryFilter
     ? scoped.filter(inst => inst.workflow_type === approvalsCategoryFilter)
     : scoped;

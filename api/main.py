@@ -1348,13 +1348,31 @@ def _rollback_match_review_submission(instance: dict, actor: dict) -> dict:
 # cross-domain-console posture as the two queues above.
 # ---------------------------------------------------------------------------
 
-def _my_workflow_activity(workflow_type: str, user_id: str) -> dict:
-    df = run_query("""
+def _my_workflow_activity(workflow_type: str, user_id: str, domain_key: Optional[str] = None) -> dict:
+    """`domain_key` narrows the 'your activity' slice to one domain, same as
+    the rest of these dashboard endpoints -- governance.workflow_instances
+    has no domain_key column of its own (a stewardship_remediation/
+    match_review_confirmation instance's domain is whatever its
+    exception_id/pair_id's own record says), so this joins out to whichever
+    queue table actually owns that entity_id rather than assuming every
+    workflow_type is domain-scopable this way. Phase 6 (stewardship console
+    nav): without this, the Dashboard tab's 'Your Activity' widget stayed
+    cross-domain even after everything else on the page was scoped."""
+    domain_clause = ""
+    params = [workflow_type, user_id]
+    if domain_key:
+        if workflow_type == "stewardship_remediation":
+            domain_clause = " AND entity_id IN (SELECT exception_id FROM main_silver.exceptions_queue WHERE domain_key = ?)"
+            params.append(domain_key)
+        elif workflow_type == "match_review_confirmation":
+            domain_clause = " AND entity_id IN (SELECT pair_id FROM main_gold.gold_match_review_queue WHERE domain_key = ?)"
+            params.append(domain_key)
+    df = run_query(f"""
         SELECT status, COUNT(*) AS n
         FROM governance.workflow_instances
-        WHERE workflow_type = ? AND maker_user_id = ?
+        WHERE workflow_type = ? AND maker_user_id = ?{domain_clause}
         GROUP BY 1
-    """, [workflow_type, user_id])
+    """, params)
     mine = {"submitted": 0, "approved": 0, "pending": 0, "sent_back": 0}
     for r in df.itertuples():
         n = int(r.n)
@@ -1428,7 +1446,7 @@ def exceptions_dashboard_summary(domain_key: Optional[str] = None,
         "by_status": [{"status": r.status, "count": int(r.n)} for r in status_df.itertuples()],
         "by_reason": [{"reason": r.reason, "count": int(r.n)} for r in reason_df.itertuples()],
         "trend": sorted(trend.values(), key=lambda x: x["date"]),
-        "your_activity": _my_workflow_activity("stewardship_remediation", user["user_id"]),
+        "your_activity": _my_workflow_activity("stewardship_remediation", user["user_id"], domain_key),
     }
 
 
@@ -1476,7 +1494,7 @@ def match_review_dashboard_summary(domain_key: Optional[str] = None,
         "by_status": [{"status": r.status, "count": int(r.n)} for r in status_df.itertuples()],
         "similarity_buckets": buckets,
         "thresholds": {"review_lower": low, "auto_merge": high},
-        "your_activity": _my_workflow_activity("match_review_confirmation", user["user_id"]),
+        "your_activity": _my_workflow_activity("match_review_confirmation", user["user_id"], domain_key),
     }
 
 
