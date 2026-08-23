@@ -18,3 +18,15 @@ sources:
         description: Audit trail of every edge (exact or fuzzy) that connected two records into the same match group.
       - name: match_review_candidates
         description: Borderline fuzzy-match pairs (not auto-merged) awaiting a data steward's confirm/reject decision.
+
+  - name: stewardship
+    schema: stewardship
+    description: >
+      Live steward decision-state, written directly by api/main.py and
+      scripts/generate_matches.py (CREATE TABLE IF NOT EXISTS, same
+      belongs-to-neither-bronze-nor-dbt posture as gold_prep above) --
+      referenced from dbt for the first time by gold_match_candidates.sql's
+      suspect-match gold hold (see that model's comment).
+    tables:
+      - name: match_review_overrides
+        description: One row per Match Review pair once a steward has acted on it -- status is 'in_review' from submission until the confirm/reject maker-checker workflow clears, then 'confirmed' or 'rejected'. No row at all means the pair is still untouched in the review queue (equivalent to 'pending').

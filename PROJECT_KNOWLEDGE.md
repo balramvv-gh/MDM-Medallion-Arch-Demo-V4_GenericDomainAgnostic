@@ -397,25 +397,46 @@ already does across every active domain.
      section above for how this was fixed from a hardcoded "customer" string),
      for the steward to confirm or reject. Confirm/reject submits into a
      maker-checker workflow (`match_review_confirmation`, 2 sequential levels:
-     Data Owner, then Admin). Once a **confirm** decision is approved, it
-     auto-processes in real time (`api/reprocessing.py`'s
-     `reprocess_confirmed_match_review`): attribute-level survivorship is re-run
-     across the UNION of every source record already contributing to EITHER
-     side's current golden record (within that domain) — producing the merged
-     group's surviving value for every gold attribute except `golden_id` itself;
-     the smaller (by numeric suffix) of the two sides' `golden_id`s survives; and
-     the other is retired (logged to the audit trail as `logically_deleted`),
-     with every crosswalk row that pointed at either golden record rewritten to
-     point at the surviving one. A **reject** decision has nothing to
-     reprocess — it only permanently excludes the pair from future matching
-     runs. **Match Review hold**: while a pair's review is open, both of its two
-     silver records sit out of matching entirely on every subsequent
-     `generate_matches.py` run. If an updated version of either side's source
-     record lands in silver while the review is still open, the review is
-     auto-cancelled (status `cancelled`, a system-written note) rather than left
-     to keep judging stale data — triggered in real time by
-     `api/reprocessing.py`'s `_cancel_stale_match_reviews` and in the batch
-     pipeline by `scripts/cancel_stale_match_reviews.py`.
+     Data Owner, then Admin). **Suspect-match gold hold** (see "Suspect-match
+     gold hold (this pass)" below for the full design): while a pair is open —
+     no decision, or a decision still working through this workflow — neither
+     side reaches the gold layer at all unless it's also part of an unrelated
+     multi-source golden record; only singletons and confident (auto-merged)
+     matches flow through to gold on the normal path. So both possible
+     decisions now have real-time gold work to do once approved, not just
+     confirm:
+       - **Confirm** — `api/reprocessing.py`'s `reprocess_confirmed_match_review`
+         re-runs attribute-level survivorship across every source record ending
+         up under the target golden_id, producing the merged group's surviving
+         value for every gold attribute except `golden_id` itself. The target
+         depends on how many of the two sides already have a golden_id: neither
+         (the ordinary held-suspect case) creates a brand-new golden record from
+         both sides; exactly one (an edge case — that side is also part of an
+         unrelated multi-member group) adds the still-held side into it; both
+         (the pre-hold-era shape, still possible) merges the two, smaller
+         `golden_id` surviving and the other retired (logged to the audit trail
+         as `logically_deleted`), every crosswalk row pointed at either
+         rewritten to the surviving one.
+       - **Reject** — a rejected pair's sides were never unioned by
+         `generate_matches.py` to begin with, so they're ordinary singletons
+         that just need their own golden record now that the suspicion is
+         cleared. `api/reprocessing.py`'s `reprocess_rejected_match_review`
+         creates one (via the same helper an uncorroborated corrected record
+         uses, at the domain's `no_match_baseline` confidence) for whichever
+         side(s) don't already have one; a side that already has a golden_id
+         (unrelated multi-member group) is left untouched. The pair itself is
+         also permanently excluded from future matching runs either way.
+
+     **Match Review hold** (a separate, earlier-stage mechanism from the gold
+     hold above — see `scripts/generate_matches.py`'s docstring): while a
+     pair's review is open, both of its two silver records sit out of matching
+     entirely on every subsequent `generate_matches.py` run. If an updated
+     version of either side's source record lands in silver while the review is
+     still open, the review is auto-cancelled (status `cancelled`, a
+     system-written note) rather than left to keep judging stale data —
+     triggered in real time by `api/reprocessing.py`'s
+     `_cancel_stale_match_reviews` and in the batch pipeline by
+     `scripts/cancel_stale_match_reviews.py`.
    - **Approvals** — a split-pane view (queue list left, detail panel right)
      listing workflow instances awaiting this user's decision ("Awaiting my
      decision") or previously submitted by them ("My submissions"), for any of
@@ -877,6 +898,135 @@ the project's own `mdm_demo.duckdb`; all new/changed HTML element IDs referenced
 JS were cross-checked against the HTML for existence, each container ID confirmed to
 appear exactly once.
 
+## Suspect-match gold hold (this pass)
+
+Bug report: a suspect (Match Review-pending) pair's two source records were each
+showing up in the gold layer as their own individual golden record — e.g.
+Customer's CRM-0019/ERP-00019 and Product's ERP-00036/PLM-00036 both had live
+golden records even though their pairs sat untouched in the Match Review queue.
+Root cause: `gold_match_candidates.sql` (and everything downstream of it —
+`gold_survivorship_winners.sql`, `gold_crosswalk.sql`, `golden_records.sql`, all
+full-`table` rebuilds joined off it) had no awareness of Match Review status at
+all — it simply attached every silver record's `match_group_id` from
+`gold_prep.match_groups` and let it flow straight to gold. The pre-existing "Match
+Review hold" in `scripts/generate_matches.py` (see that script's docstring) only
+ever protected an on-hold record from picking up *new* matching disturbance in a
+future run; it never suppressed gold materialization at any stage. Because a
+freshly-discovered suspect pair's two sides are never unioned by
+`generate_matches.py` (only `'confirmed'` edges are — see its clustering step),
+each side lands in its own singleton `match_group_id` and, under the old
+`gold_match_candidates.sql`, immediately became its own singleton golden record —
+exactly the bug.
+
+**Fix, batch side — `dbt_project/models/gold/gold_match_candidates.sql`.** A
+silver record is now withheld from gold entirely (no golden record, no crosswalk
+row — simply absent from this model, and everything downstream of it) when BOTH:
+1. its `match_group_id` is a true singleton (`group_size = 1`) in
+   `gold_prep.match_groups` — i.e. `generate_matches.py` did not auto-merge it via
+   any exact or auto-merge-threshold fuzzy edge; and
+2. it's a party to a `gold_prep.match_review_candidates` pair with no decision yet,
+   or a decision still working through the confirm/reject maker-checker workflow —
+   no row at all in `stewardship.match_review_overrides`, or one with status
+   `'pending'`/`'in_review'`.
+
+Only singletons and confident (auto-merged) matches flow through to a golden
+record this way — a suspect match's sides wait for the steward's decision to be
+confirmed *and* approved, per the user's own framing of the requirement. This is
+scoped to true singletons on purpose: a record that's already part of a
+multi-member group (`group_size > 1`) stays untouched even if it also happens to
+be entangled in a separate, still-open suspect pairing with a third record
+elsewhere — the existing merge was established by an unrelated edge and doesn't
+deserve to be destabilized by an unrelated new suspicion. Verified directly
+against the project's own `mdm_demo.duckdb`: rebuilding just the gold layer
+(`dbt run --select gold.*`) dropped Customer from 111 → 107 golden records and
+Product from 130 → 111 — exactly the count of true-singleton sides currently
+party to an open pair in each domain (4 and 19 respectively, cross-checked by a
+separate ad hoc query) — and `scripts/audit_pipeline_diff.py`'s existing
+`'logically_deleted'` bookkeeping (it already handles "a golden_id that existed
+in the previous build but not this one" — originally built for source-record
+deletions) logged all 23 disappearances cleanly with no code changes needed
+there. Confirmed CRM-0019/ERP-00019 and ERP-00036/PLM-00036 specifically dropped
+out of `main_gold.golden_records`/`gold_crosswalk`, and that PLM-00036's
+*existing* multi-source golden record (already merged with a third, unrelated
+SUPPLIER source before this pair was even raised) was left completely untouched
+despite PLM-00036 also being one side of the still-open suspect pair.
+
+This required a brand-new dbt source declaration — `stewardship.match_review_overrides`
+in `dbt_project/models/gold/sources.yml` — the first time any dbt model has ever
+read from the `stewardship` schema (previously written only by
+`api/main.py`/`scripts/generate_matches.py`/`scripts/cancel_stale_match_reviews.py`,
+never referenced from SQL). Same "Python/API writes it directly, dbt treats it as
+a source" posture already used for `gold_prep`.
+
+**Fix, real-time side — `api/reprocessing.py`.** Both of the existing
+maker-checker-approved decision paths assumed every silver record already had a
+golden_id by the time a steward's decision needed realizing — no longer true once
+suspect pairs are held out of gold. Both functions were restructured to handle a
+side having no golden_id at all:
+- **`reprocess_confirmed_match_review(pair_id, actor)`** — previously assumed both
+  sides already belonged to some golden record and only ever merged two existing
+  ones (smaller golden_id survives, other retired). Now handles three shapes,
+  detected from how many of the pair's two sides currently resolve a golden_id via
+  `gold_crosswalk`: **(a) neither side has one** (the ordinary held-suspect case) —
+  a brand-new golden record is created from scratch with both sides as founding
+  contributors; **(b) exactly one side has one** (edge case: that side is also
+  part of an unrelated multi-member group formed by a different edge, so the
+  singleton-only gold hold never applied to it) — the still-held side is added
+  into that existing golden record as a new contributing source; **(c) both sides
+  already have one** — the original two-golden-records-merge-into-one behavior,
+  unchanged. All three recompute attribute-level survivorship
+  (`bus_rules.survivorship_rules`-driven, same logic `_update_existing_golden_record`
+  uses) across every source record ending up under the target golden_id. Verified
+  directly against the sandbox database for all three shapes plus the pre-existing
+  `already_merged` no-op (both sides already resolve to the same golden_id): (a)
+  confirming CRM-0019/ERP-00019 created a fresh `GOLD-CUSTOMER-00112` with both as
+  contributors; (b) confirming ERP-00036/PLM-00036 added ERP-00036 into
+  PLM-00036's existing 2-source `GOLD-PRODUCT-00078` (now 3 sources); (c)
+  re-confirming the already-resolved ERP-00036/SUP-00036 pair correctly no-opped.
+- **`reprocess_rejected_match_review(pair_id, actor)`** (new function) — a
+  rejected pair's sides were never unioned by `generate_matches.py` to begin with,
+  so once rejected they're ordinary singletons that just need their own,
+  independent golden record materialized (they were being held out of gold purely
+  because the pair was open, not because they're actually related to anything).
+  For each side without an existing golden_id, creates one via the pre-existing
+  `_create_new_golden_record` helper (same one `reprocess_corrected_record` uses
+  for a genuinely uncorroborated record), at the domain's `no_match_baseline`
+  confidence. A side that already has a golden_id (unrelated multi-member group,
+  or an earlier action already materialized it) is left untouched. Verified: a
+  reject on a pair where one side (PLM-00034) already belonged to an existing
+  multi-source golden record and the other (ERP-00034) was a held singleton
+  correctly created a new golden record for ERP-00034 only, leaving PLM-00034's
+  golden record untouched.
+
+`api/main.py`'s `_execute_match_review` (the `on_approved` callback for the
+`match_review_confirmation` workflow) now calls `reprocess_rejected_match_review`
+on a rejected decision (previously did nothing beyond writing the override row —
+fine under the old always-already-in-gold assumption, no longer fine once
+rejected pairs' sides can be absent from gold) and builds a richer response note
+for all four `reprocess_confirmed_match_review` outcomes
+(`merged`/`created_new_golden_record`/`added_to_existing_golden_record`/`already_merged`),
+not just the original two.
+
+Neither the `stewardship.match_review_overrides` schema nor
+`scripts/generate_matches.py`'s clustering/matching logic itself needed to
+change — the fix is entirely in what gold *does* with an already-correct match
+result, plus teaching the two real-time reprocessing paths that "no existing
+golden_id yet" is now a normal, expected starting state rather than a
+should-never-happen error (the old `reprocess_confirmed_match_review` used to
+`raise RuntimeError` if either side had no golden_id; that precondition no
+longer holds and the function was rewritten around it rather than around that
+assumption). `generate_matches.py`'s own module docstring gained a short
+cross-reference to this gold-layer hold, alongside its pre-existing "Match Review
+hold" section (which is about matching-cycle protection, not gold materialization
+— easy to conflate, so the docstring is explicit that they're two different
+mechanisms one step apart in the pipeline).
+
+Files touched: `dbt_project/models/gold/gold_match_candidates.sql`,
+`dbt_project/models/gold/sources.yml`, `api/reprocessing.py`, `api/main.py`,
+`scripts/generate_matches.py` (docstring only — no logic change). No changes to
+`gold_match_review_queue.sql` (it already reads live status via the API's
+query-time join, unaffected by this) or to the Match Review UI.
+
 ## Key data model notes
 
 - `governance.domain_registry` / `domain_attributes` / `domain_source_systems` /
@@ -944,13 +1094,21 @@ appear exactly once.
   (itself a static point-in-time snapshot; live status lives in the overrides table).
   **Renamed from `stewardship_app` this generalization** — see above.
 - `stewardship.match_review_overrides` / `match_review_log` — same live-status-overlay
-  pattern, for `gold_match_review_queue` instead of `exceptions_queue`. A 'confirmed'
-  override is realized in real time by `api/reprocessing.py`'s
-  `reprocess_confirmed_match_review` the moment the maker-checker chain approves it;
-  `generate_matches.py`'s forced union-find merge on the next batch run is a fallback for
-  the rare case that real-time step itself failed. A 'rejected' override permanently
-  excludes that pair. 'cancelled' is a system-written terminal status distinct from
-  'rejected' — see "Match Review hold" above.
+  pattern, for `gold_match_review_queue` instead of `exceptions_queue`. Also now read
+  directly by dbt (`gold_match_candidates.sql`'s suspect-match gold hold — see
+  "Suspect-match gold hold (this pass)" below) — the first dbt model to ever source
+  from this schema. A 'confirmed' override is realized in real time by
+  `api/reprocessing.py`'s `reprocess_confirmed_match_review` the moment the
+  maker-checker chain approves it (creating a brand-new golden record, adding a
+  still-held side to an existing one, or merging two existing ones, depending on how
+  many of the pair's sides already have a golden_id); a 'rejected' override is
+  likewise realized by `reprocess_rejected_match_review` (materializing an
+  independent golden record for whichever side(s) don't already have one) and
+  permanently excludes that pair from future matching. Either real-time step failing
+  falls back to the next full `generate_matches.py && dbt run` reaching the same
+  outcome (a confirmed pair's forced union-find merge; a rejected pair's sides are
+  just ordinary un-held singletons there). 'cancelled' is a system-written terminal
+  status distinct from 'rejected' — see "Match Review hold" above.
 - `audit.audit_trail` — append-only, domain-scoped gold-layer audit trail (`api/audit.py`).
   One row per changed attribute per logical operation, grouped by `change_batch_id`. Three
   writers: `api/main.py`'s `update_record()` (`event_source='portal_manual_edit'`),

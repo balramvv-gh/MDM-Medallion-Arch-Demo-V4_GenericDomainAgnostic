@@ -138,6 +138,24 @@ source records landing in silver, which cancels the stale review (status ->
 'cancelled', see stewardship.match_review_overrides' docstring in api/db.py,
 api/reprocessing.py's _cancel_stale_match_reviews, and
 scripts/cancel_stale_match_reviews.py for the batch-path trigger).
+
+Suspect-match GOLD hold (separate from, but closely related to, the matching
+hold just described): this script's own output (gold_prep.match_groups) says
+nothing about review status -- a pending pair's two sides still each land in
+their own singleton match group here, same as any other unmatched record.
+The actual gold-layer suppression lives one step downstream, in
+dbt_project/models/gold/gold_match_candidates.sql -- it withholds a silver
+record from gold entirely (no golden record, no crosswalk row at all) if its
+match_group here is a true singleton AND it is a party to a Match Review
+pair with no decision yet, or a decision still working through the
+confirm/reject maker-checker workflow. This is what actually makes good on
+"only singletons and confident (auto-merged) matches reach gold; a suspect
+match's sides wait for the steward's decision to be confirmed and approved"
+-- see that model's own comment for the full rule, and
+api/reprocessing.py's reprocess_confirmed_match_review /
+reprocess_rejected_match_review for how a decision, once approved, realizes
+the corresponding golden record(s) in real time rather than waiting for the
+next full `dbt run`.
 """
 import hashlib
 import json

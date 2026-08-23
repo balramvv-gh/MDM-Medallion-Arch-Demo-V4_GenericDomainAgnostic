@@ -85,6 +85,20 @@ not a rewrite of existing code.
   from governed metadata. **Golden IDs are domain-qualified**
   (`GOLD-CUSTOMER-00001`, not a flat `GOLD-00001`) since a match_group_id is only
   unique within one domain's own matching run.
+- **Suspect-match gold hold** — only singletons and confident (auto-merged)
+  matches flow through to a golden record; a suspect match's two sides are
+  withheld from the gold layer entirely (no golden record, no crosswalk row)
+  until the steward's confirm/reject decision is submitted *and* clears the
+  full maker-checker approval workflow (`gold_match_candidates.sql`, scoped to
+  true singleton match groups so an already-merged multi-source golden record
+  is never disturbed by an unrelated new suspicion involving one of its
+  members). Once approved, `api/reprocessing.py` realizes the outcome in real
+  time rather than waiting for the next full pipeline rebuild: a **confirm**
+  creates a new golden record from the pair (or merges/extends existing ones,
+  depending on whether either side already picked up an unrelated golden
+  record in the meantime); a **reject** materializes each side's own
+  independent golden record, since a rejected pair's sides were never
+  candidates for merging in the first place.
 - **Product domain** — the platform's second domain, onboarded after the metadata
   foundation above was built, using exactly the additive process it was designed
   for: new governance metadata plus two genuinely new, reusable rule types, not a
@@ -705,7 +719,10 @@ queues to report overall pipeline health graded against `governance.monitoring_t
   silver while the review is open, the review is auto-cancelled with an explanatory note
   (`stewardship.match_review_overrides.status = 'cancelled'`) rather than left to keep
   judging stale data — triggered by `api/reprocessing.py` in real time and
-  `scripts/cancel_stale_match_reviews.py` in the batch pipeline.
+  `scripts/cancel_stale_match_reviews.py` in the batch pipeline. This is a
+  separate mechanism from the **suspect-match gold hold** described above (this
+  one protects the matching cycle from further disturbance; that one is what
+  actually keeps an open pair's sides out of the gold layer).
 - **Survivorship is attribute-level**: for every active attribute of every domain,
   each is picked independently by its own rule in `bus_rules.survivorship_rules`
   (most common / most complete / oldest / newest / pattern match / shortest value /

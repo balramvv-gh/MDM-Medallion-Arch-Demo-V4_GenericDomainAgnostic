@@ -699,51 +699,65 @@ def reprocess_confirmed_match_review(pair_id: str, actor: dict = None) -> dict:
     (main_gold.gold_match_review_queue.domain_key) -- callers don't need to
     already know it.
 
-    Both sides of a confirmed pair already belong to some golden record --
-    every silver record is assigned one, whether a brand-new singleton or an
-    existing multi-source merge. The auto-processing steps:
-      1. Runs attribute-level survivorship (the same
-         bus_rules.survivorship_rules-driven, per-attribute logic
-         `_update_existing_golden_record` uses) across the UNION of every
-         source record already contributing to EITHER side's golden
-         record -- not just the two paired records themselves -- producing
-         the merged group's surviving value for every gold attribute except
-         golden_id itself.
-      2. The surviving golden_id is the smaller (by numeric suffix, within
-         the shared domain segment -- both sides of a pair are always the
-         same domain) of the two sides' current golden records.
-      3. Since a Match Review pair only ever forms between two records that
-         were NOT already in the same match group, this is normally two
-         distinct golden records: the losing one is retired -- its
+    Suspect-match gold hold (dbt_project/models/gold/gold_match_candidates.sql):
+    while a Match Review pair is open, neither side gets a golden record at
+    all unless it's also part of an unrelated multi-member group -- only
+    singletons and confident (auto-merged) matches flow through to gold.
+    So by the time a pair is confirmed, there are three possible starting
+    shapes for its two sides:
+      1. NEITHER side has a golden_id yet (the ordinary case: both were held
+         out of gold this whole time) -- a brand-new golden record is
+         created from scratch with both sides as its founding contributors.
+      2. EXACTLY ONE side already has a golden_id (an edge case: that side
+         is also part of an unrelated multi-member group formed by a
+         completely different exact/auto-merge edge, so the suspect-match
+         hold didn't apply to it) -- the other (still-held) side is added
+         into that existing golden record as a new contributing source, the
+         same shape as `reprocess_corrected_record`'s "matched an existing
+         golden record" branch.
+      3. BOTH sides already have a golden_id (can happen if this function,
+         or a prior full rebuild, already resolved this exact pair, or
+         neither side was actually held to begin with) -- the original
+         two-golden-records-merge-into-one behavior applies: the surviving
+         golden_id is the smaller (by numeric suffix, within the shared
+         domain segment) of the two, and the losing one is retired -- its
          main_gold.golden_records row is deleted and logged to the audit
          trail as 'logically_deleted' (the same convention
          scripts/audit_pipeline_diff.py uses when a batch rebuild drops a
-         golden_id that no longer exists) -- and every crosswalk row that
-         pointed at either golden record is rewritten to point at the
-         surviving one only.
-      4. Returns a result dict describing the merge; the caller is what
-         actually marks the stewardship record complete (writing
-         'confirmed' to stewardship.match_review_overrides, which it does
-         BEFORE calling this function -- see _execute_match_review -- so
-         the human decision stands and is recorded even if this mechanical
-         merge step itself fails; a failure surfaces in the workflow
-         instance's `result.executor_error` rather than being silently lost,
-         same posture as every other on_approved callback in this app).
+         golden_id that no longer exists).
+    In every case, attribute-level survivorship (the same
+    bus_rules.survivorship_rules-driven, per-attribute logic
+    `_update_existing_golden_record` uses) is recomputed across every source
+    record ending up under the target golden_id -- not just the two paired
+    records themselves -- producing that group's surviving value for every
+    gold attribute except golden_id itself; every crosswalk row for any
+    golden_id being folded into the target is rewritten to point at the
+    target only.
+
+    Returns a result dict describing what happened; the caller is what
+    actually marks the stewardship record complete (writing 'confirmed' to
+    stewardship.match_review_overrides, which it does BEFORE calling this
+    function -- see _execute_match_review -- so the human decision stands
+    and is recorded even if this mechanical merge step itself fails; a
+    failure surfaces in the workflow instance's `result.executor_error`
+    rather than being silently lost, same posture as every other
+    on_approved callback in this app).
 
     If the two sides somehow already resolved to the SAME golden record
     (e.g. an earlier reprocessing action already merged them via a
     different path), there is nothing to merge -- returns immediately with
     action='already_merged' instead of re-running survivorship for no
     reason. Raises RuntimeError (fail loud, not a silent no-op) if the pair
-    itself can't be found, or if a side has no golden_id at all.
+    itself can't be found, or if neither side has any contributing source
+    record left in main_silver.records at all.
 
     Known simplification, consistent with the rest of this module: if a
-    member of the losing golden record's group is itself the subject of a
+    member of a retired golden record's group is itself the subject of a
     DIFFERENT still-open Match Review pair, that other pair stays open under
-    its new (surviving) golden_id -- this function only resolves the pair it
-    was asked to realize, mirroring `_cancel_stale_match_reviews`' own scope
-    (only the just-changed record's own pairs, not every downstream
-    consequence of a merge)."""
+    its new (surviving/newly-created) golden_id -- this function only
+    resolves the pair it was asked to realize, mirroring
+    `_cancel_stale_match_reviews`' own scope (only the just-changed record's
+    own pairs, not every downstream consequence of a merge)."""
     now = datetime.utcnow()
 
     pair_df = run_query(
@@ -762,32 +776,32 @@ def reprocess_confirmed_match_review(pair_id: str, actor: dict = None) -> dict:
 
     golden_id_a = _golden_id_for_source(domain_key, *side_a)
     golden_id_b = _golden_id_for_source(domain_key, *side_b)
-    if golden_id_a is None or golden_id_b is None:
-        raise RuntimeError(
-            f"Match Review pair {pair_id} has a side with no current golden_id in "
-            f"main_gold.gold_crosswalk ({side_a}: {golden_id_a}, {side_b}: {golden_id_b}) -- "
-            f"cannot realize this confirmation until both sides are represented in gold."
-        )
 
-    if golden_id_a == golden_id_b:
+    if golden_id_a is not None and golden_id_a == golden_id_b:
         return {"action": "already_merged", "golden_id": golden_id_a, "pair_id": pair_id}
 
-    surviving_golden_id, retiring_golden_id = sorted([golden_id_a, golden_id_b], key=_golden_id_sort_key)
+    existing_golden_ids = [g for g in (golden_id_a, golden_id_b) if g is not None]
 
-    # --- (1) Gather every source record currently contributing to EITHER
-    # side's golden record -- the full "approved suspect match group", not
-    # just the two paired records -- and run attribute-level survivorship
-    # across all of them. ---
-    crosswalk = run_query(
-        "SELECT * FROM main_gold.gold_crosswalk WHERE golden_id IN (?, ?)",
-        [surviving_golden_id, retiring_golden_id],
-    )
+    # --- Gather every source record currently contributing to whichever
+    # side(s) already have a golden record, plus both pair sides themselves
+    # (which may not be in that set at all -- see docstring case 1/2) -- and
+    # run attribute-level survivorship across all of them. ---
+    if existing_golden_ids:
+        placeholders = ", ".join(["?"] * len(existing_golden_ids))
+        crosswalk = run_query(
+            f"SELECT * FROM main_gold.gold_crosswalk WHERE golden_id IN ({placeholders})",
+            existing_golden_ids,
+        )
+    else:
+        crosswalk = pd.DataFrame(columns=["source_system", "source_record_id", "match_confidence_score"])
 
+    seen_keys = set()
     candidates = []
     prior_confidence = {}
     for _, row in crosswalk.iterrows():
         key = (row["source_system"], row["source_record_id"])
         prior_confidence[key] = row["match_confidence_score"]
+        seen_keys.add(key)
         s = run_query(
             "SELECT * FROM main_silver.records WHERE domain_key = ? AND source_system = ? AND source_record_id = ?",
             [domain_key, row["source_system"], row["source_record_id"]],
@@ -802,17 +816,33 @@ def reprocess_confirmed_match_review(pair_id: str, actor: dict = None) -> dict:
                 "data": attrs,
             })
 
+    # Make sure both pair sides are represented even if they weren't already
+    # a contributor to any existing golden record (the ordinary held-suspect
+    # case -- see docstring case 1/2).
+    for source_system, source_record_id in (side_a, side_b):
+        key = (source_system, source_record_id)
+        if key in seen_keys:
+            continue
+        s = run_query(
+            "SELECT * FROM main_silver.records WHERE domain_key = ? AND source_system = ? AND source_record_id = ?",
+            [domain_key, source_system, source_record_id],
+        )
+        if not s.empty:
+            srow = s.iloc[0]
+            attrs = json.loads(srow["attributes"]) if srow["attributes"] else {}
+            candidates.append({
+                "source_system": source_system,
+                "source_record_id": source_record_id,
+                "modified_date": attrs.get("source_modified_date"),
+                "data": attrs,
+            })
+            seen_keys.add(key)
+
     if not candidates:
         raise RuntimeError(
-            f"Neither golden record in Match Review pair {pair_id} ({surviving_golden_id}, "
-            f"{retiring_golden_id}) has any contributing source record still present in "
-            f"main_silver.records -- nothing to survive."
+            f"Neither side of Match Review pair {pair_id} has any contributing source record "
+            f"still present in main_silver.records -- nothing to survive."
         )
-
-    old_survivor_row = run_query(
-        "SELECT * FROM main_gold.golden_records WHERE golden_id = ?", [surviving_golden_id]
-    )
-    old_record = _flatten_golden_row(old_survivor_row.iloc[0].to_dict()) if not old_survivor_row.empty else {}
 
     rules = _load_survivorship_rules(domain_key)
     source_priority = _source_priority(domain_key)
@@ -827,22 +857,49 @@ def reprocess_confirmed_match_review(pair_id: str, actor: dict = None) -> dict:
 
     survivor = min(candidates, key=primary_sort_key)
 
-    # --- (2)/(3) Write the merged record: update the surviving golden_id in
-    # place with the freshly-survived values, retire the losing golden_id,
-    # and rewrite the crosswalk so every contributing record now points at
-    # the surviving golden_id only. ---
-    run_write("""
-        UPDATE main_gold.golden_records SET
-            attributes = ?, source_system_count = ?, survivor_source_system = ?,
-            survivor_source_record_id = ?, gold_curated_ts = ?
-        WHERE golden_id = ?
-    """, [json.dumps(pivoted), len(distinct_sources),
-          survivor["source_system"], survivor["source_record_id"], now, surviving_golden_id])
+    # --- Decide the target golden_id, whether it's brand-new, and whether an
+    # existing golden record is being retired. ---
+    is_new_golden_record = not existing_golden_ids
+    if is_new_golden_record:
+        target_golden_id = _next_golden_id(domain_key)
+        retiring_golden_id = None
+    elif len(existing_golden_ids) == 1:
+        target_golden_id = existing_golden_ids[0]
+        retiring_golden_id = None
+    else:
+        target_golden_id, retiring_golden_id = sorted(existing_golden_ids, key=_golden_id_sort_key)
 
-    run_write(
-        "DELETE FROM main_gold.gold_crosswalk WHERE golden_id IN (?, ?)",
-        [surviving_golden_id, retiring_golden_id],
+    old_row_df = run_query(
+        "SELECT * FROM main_gold.golden_records WHERE golden_id = ?", [target_golden_id]
     )
+    old_record = _flatten_golden_row(old_row_df.iloc[0].to_dict()) if not old_row_df.empty else {}
+
+    # --- Write the target record: INSERT if it's brand-new, else UPDATE in
+    # place with the freshly-survived values -- then rewrite the crosswalk
+    # so every contributing record points at the target golden_id only. ---
+    if is_new_golden_record:
+        run_write("""
+            INSERT INTO main_gold.golden_records
+                (golden_id, domain_key, match_group_id, attributes, source_system_count,
+                 survivor_source_system, survivor_source_record_id, gold_curated_ts)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+        """, [target_golden_id, domain_key, json.dumps(pivoted), len(distinct_sources),
+              survivor["source_system"], survivor["source_record_id"], now])
+    else:
+        run_write("""
+            UPDATE main_gold.golden_records SET
+                attributes = ?, source_system_count = ?, survivor_source_system = ?,
+                survivor_source_record_id = ?, gold_curated_ts = ?
+            WHERE golden_id = ?
+        """, [json.dumps(pivoted), len(distinct_sources),
+              survivor["source_system"], survivor["source_record_id"], now, target_golden_id])
+
+    if existing_golden_ids:
+        placeholders = ", ".join(["?"] * len(existing_golden_ids))
+        run_write(
+            f"DELETE FROM main_gold.gold_crosswalk WHERE golden_id IN ({placeholders})",
+            existing_golden_ids,
+        )
 
     pair_keys = {side_a, side_b}
     for c in candidates:
@@ -860,40 +917,144 @@ def reprocess_confirmed_match_review(pair_id: str, actor: dict = None) -> dict:
                 (golden_id, domain_key, source_system, source_record_id, match_confidence_score,
                  winning_attributes, is_survivor_record, crosswalk_created_ts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, [surviving_golden_id, domain_key, c["source_system"], c["source_record_id"], confidence, won_attrs, is_surv, now])
+        """, [target_golden_id, domain_key, c["source_system"], c["source_record_id"], confidence, won_attrs, is_surv, now])
 
-    run_write("DELETE FROM main_gold.golden_records WHERE golden_id = ?", [retiring_golden_id])
+    if retiring_golden_id is not None:
+        run_write("DELETE FROM main_gold.golden_records WHERE golden_id = ?", [retiring_golden_id])
 
     new_row = run_query(
-        "SELECT * FROM main_gold.golden_records WHERE golden_id = ?", [surviving_golden_id]
+        "SELECT * FROM main_gold.golden_records WHERE golden_id = ?", [target_golden_id]
     ).iloc[0].to_dict()
-    audit_mod.log_update(
-        surviving_golden_id, old_record=old_record, new_record=_flatten_golden_row(new_row),
-        event_source="steward_reprocessing",
-        changed_by=(actor or {}).get("user_id", "system:steward_reprocessing"),
-        changed_by_label=(actor or {}).get("full_name") or (actor or {}).get("username", "steward"),
-        change_reason=(
-            f"Attribute-level survivorship recomputed via real-time reprocessing of confirmed "
-            f"Match Review pair {pair_id} (merged {retiring_golden_id} into this record; "
-            f"primary survivor: {survivor['source_system']}:{survivor['source_record_id']})"
-        ),
-        event_ts=now,
-    )
-    audit_mod.log_logical_delete(
-        retiring_golden_id,
-        event_source="steward_reprocessing",
-        changed_by=(actor or {}).get("user_id", "system:steward_reprocessing"),
-        changed_by_label=(actor or {}).get("full_name") or (actor or {}).get("username", "steward"),
-        change_reason=(
-            f"Retired via real-time reprocessing of confirmed Match Review pair {pair_id} -- "
-            f"merged into {surviving_golden_id} (smaller golden_id survives)."
-        ),
-        event_ts=now,
-    )
+
+    if is_new_golden_record:
+        audit_mod.log_creation(
+            target_golden_id, _flatten_golden_row(new_row), event_source="steward_reprocessing",
+            changed_by=(actor or {}).get("user_id", "system:steward_reprocessing"),
+            changed_by_label=(actor or {}).get("full_name") or (actor or {}).get("username", "steward"),
+            change_reason=(
+                f"Created via real-time reprocessing of confirmed Match Review pair {pair_id} "
+                f"(both sides were held out of gold while the pair was a suspect match; primary "
+                f"survivor: {survivor['source_system']}:{survivor['source_record_id']})"
+            ),
+            event_ts=now,
+        )
+    else:
+        merge_clause = (
+            f"merged {retiring_golden_id} into this record; " if retiring_golden_id
+            else "added the previously-held side into this existing record; "
+        )
+        audit_mod.log_update(
+            target_golden_id, old_record=old_record, new_record=_flatten_golden_row(new_row),
+            event_source="steward_reprocessing",
+            changed_by=(actor or {}).get("user_id", "system:steward_reprocessing"),
+            changed_by_label=(actor or {}).get("full_name") or (actor or {}).get("username", "steward"),
+            change_reason=(
+                f"Attribute-level survivorship recomputed via real-time reprocessing of confirmed "
+                f"Match Review pair {pair_id} ({merge_clause}primary survivor: "
+                f"{survivor['source_system']}:{survivor['source_record_id']})"
+            ),
+            event_ts=now,
+        )
+
+    if retiring_golden_id is not None:
+        audit_mod.log_logical_delete(
+            retiring_golden_id,
+            event_source="steward_reprocessing",
+            changed_by=(actor or {}).get("user_id", "system:steward_reprocessing"),
+            changed_by_label=(actor or {}).get("full_name") or (actor or {}).get("username", "steward"),
+            change_reason=(
+                f"Retired via real-time reprocessing of confirmed Match Review pair {pair_id} -- "
+                f"merged into {target_golden_id} (smaller golden_id survives)."
+            ),
+            event_ts=now,
+        )
+
+    if is_new_golden_record:
+        action = "created_new_golden_record"
+    elif retiring_golden_id is not None:
+        action = "merged"
+    else:
+        action = "added_to_existing_golden_record"
 
     return {
-        "action": "merged",
-        "golden_id": surviving_golden_id,
+        "action": action,
+        "golden_id": target_golden_id,
         "retired_golden_id": retiring_golden_id,
         "contributing_sources": len(candidates),
     }
+
+
+def reprocess_rejected_match_review(pair_id: str, actor: dict = None) -> dict:
+    """Entry point called by api/main.py's `_execute_match_review` once a
+    Match Review pair's "reject" decision has cleared its full maker-checker
+    chain (Data Owner, then Admin) -- the mirror image of
+    `reprocess_confirmed_match_review` for the other possible steward
+    decision.
+
+    A rejected pair's two sides were never unioned by
+    scripts/generate_matches.py in the first place (only 'confirmed' edges
+    get unioned -- see that script's clustering step), so each is an
+    ordinary singleton match group. Per
+    dbt_project/models/gold/gold_match_candidates.sql's suspect-match gold
+    hold, a singleton that's party to an OPEN Match Review pair is withheld
+    from gold entirely -- so as long as this pair was open, neither side had
+    a golden record (unless it also happened to belong to an unrelated
+    multi-member group). Now that the pair is decided as "not a match", that
+    hold no longer applies: this function creates a brand-new, single-source
+    golden record (via `_create_new_golden_record`, the same helper
+    `reprocess_corrected_record` uses for an uncorroborated record) for
+    whichever side(s) don't already have one, using the domain's
+    'no_match_baseline' confidence -- exactly the same confidence a genuinely
+    uncorroborated record gets anywhere else in this app. A side that
+    already has a golden_id (e.g. it's part of an unrelated multi-member
+    group, or an earlier action already materialized it) is left untouched.
+
+    Realizing this in real time avoids leaving a just-rejected pair's sides
+    invisible in gold until the next full `generate_matches.py && dbt run`;
+    that next rebuild would create the same golden records anyway (a
+    rejected pair's sides are ordinary un-held singletons there), so this is
+    a fallback, not the only path, same posture as the confirmed-pair merge
+    path. Raises RuntimeError if the pair itself can't be found."""
+    now = datetime.utcnow()
+
+    pair_df = run_query(
+        "SELECT * FROM main_gold.gold_match_review_queue WHERE pair_id = ?", [pair_id]
+    )
+    if pair_df.empty:
+        raise RuntimeError(
+            f"No Match Review candidate found in main_gold.gold_match_review_queue for "
+            f"pair_id={pair_id} -- cannot realize this rejection."
+        )
+    pair = pair_df.iloc[0]
+    domain_key = pair["domain_key"]
+    sides = [
+        (pair["source_system_a"], pair["source_record_id_a"]),
+        (pair["source_system_b"], pair["source_record_id_b"]),
+    ]
+
+    baseline_confidence = _load_baseline_confidence(domain_key)
+    created = []
+    for source_system, source_record_id in sides:
+        if _golden_id_for_source(domain_key, source_system, source_record_id) is not None:
+            continue  # already represented in gold -- nothing to do for this side
+        s = run_query(
+            "SELECT * FROM main_silver.records WHERE domain_key = ? AND source_system = ? AND source_record_id = ?",
+            [domain_key, source_system, source_record_id],
+        )
+        if s.empty:
+            continue  # source record no longer in silver -- nothing to materialize
+        srow = s.iloc[0]
+        attrs = json.loads(srow["attributes"]) if srow["attributes"] else {}
+        record = dict(attrs)
+        record["source_system"] = source_system
+        record["source_record_id"] = source_record_id
+        result = _create_new_golden_record(
+            domain_key, source_system, source_record_id, record, now, baseline_confidence, actor
+        )
+        created.append({
+            "source_system": source_system,
+            "source_record_id": source_record_id,
+            "golden_id": result["golden_id"],
+        })
+
+    return {"action": "rejected", "pair_id": pair_id, "created_golden_records": created}

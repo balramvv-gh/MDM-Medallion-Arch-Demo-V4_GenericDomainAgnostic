@@ -14,7 +14,7 @@ import lineage as lineage_mod
 import auth as auth_mod
 import audit as audit_mod
 import workflow_engine as wf_mod
-from reprocessing import reprocess_corrected_record, reprocess_confirmed_match_review
+from reprocessing import reprocess_corrected_record, reprocess_confirmed_match_review, reprocess_rejected_match_review
 from validation import validate_record
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1271,15 +1271,17 @@ def _execute_match_review(instance: dict, actor: dict) -> dict:
     decision (confirm/reject) the steward originally proposed.
 
     The stewardship record is marked complete (status written to
-    stewardship.match_review_overrides) BEFORE the real-time merge is
-    attempted for a 'confirmed' decision, not after -- the human decision
-    stands regardless of whether the mechanical merge step itself succeeds
-    (same posture as every other on_approved callback in this app: see
-    workflow_engine.decide()'s executor_error handling). A merge failure
-    therefore surfaces in the workflow instance's result rather than
-    silently leaving the pair undecided; the next full
-    `generate_matches.py` run would still pick up the 'confirmed' override
-    and realize the merge as a fallback."""
+    stewardship.match_review_overrides) BEFORE the real-time gold
+    reprocessing is attempted, not after -- the human decision stands
+    regardless of whether the mechanical gold step itself succeeds (same
+    posture as every other on_approved callback in this app: see
+    workflow_engine.decide()'s executor_error handling). A failure therefore
+    surfaces in the workflow instance's result rather than silently leaving
+    the pair undecided; the next full `generate_matches.py && dbt run` would
+    still pick up the 'confirmed'/'rejected' override and realize the same
+    outcome as a fallback -- see gold_match_candidates.sql's suspect-match
+    gold hold, which is why either decision needs a real-time step at all:
+    while this pair was open, both sides were withheld from gold entirely."""
     pair_id = instance["entity_id"]
     action_type = instance["action_type"]
     steward_note = instance["payload"].get("steward_note")
@@ -1294,18 +1296,31 @@ def _execute_match_review(instance: dict, actor: dict) -> dict:
         VALUES (?, ?, ?, ?)
     """, [str(uuid.uuid4()), pair_id, final_status, steward_note])
 
-    if final_status != "confirmed":
-        return {
-            "action": final_status,
-            "pair_id": pair_id,
-            "note": "This pair is permanently excluded from future matching runs and will not "
-                    "resurface in the review queue.",
-        }
-
-    # Attribute the merge/audit trail to the original maker (the steward who
-    # confirmed the match), not the Data Owner/Admin who approved it --
-    # same convention as _execute_stewardship_resolve above.
+    # Attribute the gold/audit trail to the original maker (the steward who
+    # confirmed/rejected the match), not the Data Owner/Admin who approved
+    # it -- same convention as _execute_stewardship_resolve above.
     maker = {"user_id": instance["maker_user_id"], "full_name": instance["maker_label"]}
+
+    if final_status != "confirmed":
+        realize_result = reprocess_rejected_match_review(pair_id, actor=maker)
+        created = realize_result.get("created_golden_records", [])
+        base_note = (
+            "This pair is permanently excluded from future matching runs and will not "
+            "resurface in the review queue."
+        )
+        if created:
+            created_desc = "; ".join(
+                f"{c['source_system']}:{c['source_record_id']} -> {c['golden_id']}" for c in created
+            )
+            note = (
+                f"{base_note} Both sides were being held out of the gold layer while this pair "
+                f"was a suspect match; now that it's rejected, created their own golden record(s): "
+                f"{created_desc}."
+            )
+        else:
+            note = base_note
+        return {"action": final_status, "pair_id": pair_id, "note": note, "realize": realize_result}
+
     merge_result = reprocess_confirmed_match_review(pair_id, actor=maker)
 
     if merge_result["action"] == "merged":
@@ -1313,6 +1328,20 @@ def _execute_match_review(instance: dict, actor: dict) -> dict:
             f"Merged in real time: {merge_result['retired_golden_id']} was retired into "
             f"{merge_result['golden_id']} (smaller golden_id survives), survivorship recomputed "
             f"across {merge_result['contributing_sources']} contributing source record(s)."
+        )
+    elif merge_result["action"] == "created_new_golden_record":
+        note = (
+            f"Both sides were being held out of the gold layer while this pair was a suspect "
+            f"match; created new golden record {merge_result['golden_id']} now that it's "
+            f"confirmed, survivorship recomputed across {merge_result['contributing_sources']} "
+            f"contributing source record(s)."
+        )
+    elif merge_result["action"] == "added_to_existing_golden_record":
+        note = (
+            f"One side already belonged to golden record {merge_result['golden_id']}; the other "
+            f"(held out of gold while this pair was a suspect match) was added to it, "
+            f"survivorship recomputed across {merge_result['contributing_sources']} contributing "
+            f"source record(s)."
         )
     else:
         note = f"Both sides already belong to {merge_result['golden_id']} -- nothing further to merge."
