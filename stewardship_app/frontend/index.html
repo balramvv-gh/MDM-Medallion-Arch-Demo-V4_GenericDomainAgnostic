@@ -286,6 +286,7 @@
     border-radius: 0;
   }
   .view-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+  .view-tab:disabled { opacity: 0.4; cursor: not-allowed; }
   .filter-banner { margin-left: auto; display: flex; align-items: center; gap: 10px; padding-bottom: 10px; }
   .filter-banner-text { color: var(--red); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
   .filter-clear-btn {
@@ -803,6 +804,7 @@ async function enterStewardshipDomain(domainKey) {
   }
   stewardshipDomain = domain;
   updateHeaderDomainSuffix();
+  updateNavDomainGating();
   await getDomainAttributes(domainKey);
   switchView('dashboard');
 }
@@ -978,6 +980,7 @@ async function enterApp() {
   // determineInitialView() decides where to land.
   await loadDomainsList();
   determineInitialView();
+  updateNavDomainGating();
 }
 
 // Requirement: "if user successfully navigates to data stewardship from the
@@ -1000,6 +1003,21 @@ function determineInitialView() {
   } else {
     switchView('home');
   }
+}
+
+// Dashboard/Exception Queue/Match Review/Approvals only make sense once a
+// domain has been entered from Home -- disable them (native title tooltip
+// explains why) until stewardshipDomain is set, then re-enable once
+// enterStewardshipDomain()/determineInitialView() picks one. Mirrors
+// portal_app's own updateNavDomainGating(). Home itself is deliberately
+// left out of the disabled set -- it's always reachable so a user can pick
+// (or switch) a domain.
+function updateNavDomainGating() {
+  ['tabDashboard', 'tabExceptions', 'tabMatchReview', 'tabApprovals'].forEach(id => {
+    const btn = document.getElementById(id);
+    btn.disabled = !stewardshipDomain;
+    btn.title = stewardshipDomain ? '' : 'Please select a domain';
+  });
 }
 
 async function tryRestoreSession() {
